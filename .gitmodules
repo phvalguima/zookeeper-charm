@@ -1,0 +1,3 @@
+[submodule "kafka_common"]
+    path = src/
+    url = https://github.com/phvalguima/kafka_charm_lib
