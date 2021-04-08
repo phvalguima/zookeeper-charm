@@ -8,6 +8,12 @@ options:
       Only two values possible: apache or confluent. Defines if will use apache kafka
       or confluent distro to install kafka packages. Both distro and version
       should be set.
+  install_method:
+    default: 'package'
+    type: string
+    description: |
+      There are two possible values: package or archive. If archive, it will upload the tarball set
+      in the resource of this charm. Archive method is EXPERIMENTAL for this charm.
   version:
     default: '6.1'
     type: string
@@ -48,6 +54,11 @@ options:
     type: string
     description: |
       Key to be used in base64
+  mtls-enabled:
+    default: False
+    type: boolean
+    description: |
+      EXPERIMENTAL: enable mTLS support
   zookeeper-user:
     default: 'cp-kafka'
     type: string
@@ -65,11 +76,73 @@ options:
       Port to be used to listen for client connections.
       If ssl_cert is specified or certificate relation enabled, then this port is
       configured as secureClientPort instead
+  peerPort:
+    type: int
+    default: 2888
+    description: |
+      Port to be used to listen for the peers.
+  leaderPort:
+    type: int
+    default: 3888
+    description: |
+      Port to be used by the leader
+  data-device:
+    type: string
+    default: ""
+    description: |
+      Device to be used to store the data folder.
+      If unset, the folder will be created directly on the rootfs
+  data-log-device:
+    type: string
+    default: ""
+    description: |
+      Device to be used to store the data-log folder.
+      If unset, the folder will be created directly on the rootfs
+  fs-options:
+    type: string
+    description: |
+      Filesystem options for data-*-dir options.
+  data-log-dir:
+    type: string
+    default: |
+      ext4: "/var/lib/kafka/zookeeper_log"
+    description: |
+      Transaction log folder. Formatted as YAML as the following example:
+      data-log-dir: |
+        <fs-type>: <folder-path>
+      In case rootfs is chosen, fs option will be ignored
   data-dir:
     type: string
-    default: "/var/lib/zookeeper"
+    default: |
+      ext4: "/var/lib/kafka/zookeeper"
     description: |
-      Folder to be used for zookeeper data.
+      Folder to be used for zookeeper data. Formatted as YAML the same way as data-log-dir
+      In case rootfs is chosen, fs option will be ignored
+  log4j-root-logger:
+    type: string
+    default: "INFO, stdout, zkAppender"
+    description: |
+      Set value for root logger on Zookeeper.
+  service-environment-overrides:
+    type: string
+    description: |
+      YAML formatted list of extra arguments to be added to [Environment] field of the service
+    default: |
+       KAFKA_HEAP_OPTS: "-Xmx1g"
+       KAFKA_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/kafka/zookeeper-log4j.properties"
+       LOG_DIR: "/var/log/kafka"
+  service-unit-overrides:
+    type: string
+    default: ''
+    description: |
+      YAML formatted list of extra arguments to be added to [Unit] field of the service
+  service-overrides:
+    type: string
+    description: |
+      YAML formatted list of extra arguments to be added to [Service] field of the service.
+      User, Group are overrided by the respective configs on the charm.
+      ExecStart is overriden if install_method == archive.
+    default: ''
   zookeeper-properties:
     type: string
     description: |
@@ -82,5 +155,9 @@ options:
       autopurge.snapRetainCount: 10
       autopurge.purgeInterval: 1
       admin.enableServer: false
-      
+  jmx-exporter-port:
+    type: int
+    default: 8079
+    description: |
+      Path to expose prometheus metrics for scraping.      
     
