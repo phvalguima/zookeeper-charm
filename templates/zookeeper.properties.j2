@@ -1,4 +1,3 @@
-{# zookeeper_final_properties defined in the confluent.variables role #}
-{% for key, value in zk_props %}
+{% for key, value in zk_props.items() -%}
 {{key}}={{value}}
 {% endfor %}

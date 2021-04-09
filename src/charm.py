@@ -58,10 +58,11 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             raise Exception("Not Implemented Yet")
         super().install_packages('openjdk-11-headless', packages)
         # The logic below avoid an error such as more than one entry
+        # In this case, we will pick the first entry
         data_log_fs, data_log_dir = \
-            [k for k, v in yaml.safe_load(self.config["data-log-dir"])][0]
+            [k for k, v in self.config["data-log-dir"]][0]
         data_fs, data_dir = \
-            [k for k, v in yaml.safe_load(self.config["data-dir"])][0]
+            [k for k, v in self.config["data-dir"]][0]
         self.create_data_and_log_dirs(self.config["data-log-device"],
                                       self.config["data-device"],
                                       data_log_dir,
@@ -89,8 +90,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         ActiveStatus("{} running".format(self.service))
 
     def _render_zk_properties(self):
-        zk_props = yaml.safe_load(
-            self.config.get("zookeeper-properties", "")) or {}
+        zk_props = self.config.get("zookeeper-properties", "") or {}
         if self.is_ssl_enabled():
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
@@ -122,7 +122,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 zk_list[i]["endpoint"]
         render(source="zookeeper.properties.j2",
                target="/etc/kafka/zookeeper.properties",
-               user=self.config.get('zookeeper-user'),
+               owner=self.config.get('zookeeper-user'),
                group=self.config.get("zookeeper-group"),
                perms=0o640,
                context={
@@ -134,7 +134,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             "INFO, stdout, zkAppender"
         render(source="zookeeper_log4j.properties.j2",
                target="/etc/kafka/zookeeper-log4j.properties",
-               user=self.config.get('zookeeper-user'),
+               owner=self.config.get('zookeeper-user'),
                group=self.config.get("zookeeper-group"),
                perms=0o640,
                context={
@@ -185,7 +185,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             raise Exception("Not Implemented Yet")
         render(source="override.conf.j2",
                target=target,
-               user=self.config.get('zookeeper-user'),
+               owner=self.config.get('zookeeper-user'),
                group=self.config.get("zookeeper-group"),
                perms=0o644,
                context={

@@ -29,12 +29,20 @@ TO_PATCH_HOST = [
 # Although it is intended for internal use, it is ideal to
 # load config options without firing a hook config-changed
 class TestCharm(unittest.TestCase):
+    maxDiff = None # print the entire diff on assert commands
 
     def _patch(self, obj, method):
         _m = patch.object(obj, method)
         mock = _m.start()
         self.addCleanup(_m.stop)
         return mock
+
+    def _simulate_render(self, ctx=None, templ_file=""):
+        import jinja2
+        env=jinja2.Environment(loader=jinja2.FileSystemLoader('templates'))
+        templ = env.get_template(templ_file)
+        doc = templ.render(ctx)
+        return doc
 
     def setUp(self):
         super(TestCharm, self).setUp()
@@ -43,16 +51,22 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(host, p)
 
-    @patch.object(template, "render")
-    def test_confluent_render_zk_props(self, mock_render):
+    @patch.object(cluster.ZookeeperCluster, "is_ready")
+    @patch.object(charm, "render")
+    def test_confluent_render_zk_props(self, mock_render,
+                                       mock_is_ready):
 
         mock_render.return_value = ""
+        mock_is_ready.return_value = True
         harness = Harness(charm.ZookeeperCharm)
         self.addCleanup(harness.cleanup)
         harness.begin()
         zk = harness.charm
         zk._render_zk_properties()
-        self.assertEqual(ZK_PROPERTIES, test_render(render.call_args.kwargs))
+        self.assertEqual(ZK_PROPERTIES,
+                         self._simulate_render(
+                             ctx=mock_render.call_args.kwargs["context"],
+                             templ_file='zookeeper.properties.j2'))
 
 #    def test_config_changed(self):
 #        harness = Harness(ZookeeperCharm)
