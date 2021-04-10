@@ -3,6 +3,7 @@
 
 import unittest
 from mock import patch
+from mock import PropertyMock
 
 from ops.testing import Harness
 import src.charm as charm
@@ -51,16 +52,32 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(host, p)
 
-    @patch.object(cluster.ZookeeperCluster, "is_ready")
+    @patch.object(charm.ZookeeperCluster, "get_peers", new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCluster, "is_ready", new_callable=PropertyMock)
     @patch.object(charm, "render")
     def test_confluent_render_zk_props(self, mock_render,
-                                       mock_is_ready):
+                                       mock_is_ready,
+                                       mock_get_peers):
 
         mock_render.return_value = ""
         mock_is_ready.return_value = True
+        mock_get_peers.return_value = [
+            { "myid": 1, "endpoint": "ansiblezookeeper2.example.com:2888:3888" },
+            { "myid": 2, "endpoint": "ansiblezookeeper3.example.com:2888:3888" },
+            { "myid": 3, "endpoint": "ansiblezookeeper1.example.com:2888:3888" },
+        ]
         harness = Harness(charm.ZookeeperCharm)
         self.addCleanup(harness.cleanup)
         harness.begin()
+#        harness.set_leader(True)
+#        cluster1 = \
+#            harness.add_relation('cluster', 'zookeeper')
+#        harness.add_relation_unit(cluster1, 'zookeeper/0')
+#        harness.update_relation_data(cluster1, 'zookeeper/0', {"myid":1, "endpoint": "ansiblezookeeper2.example.com:2888:3888"})
+#        cluster2 = \
+#            harness.add_relation('cluster', 'zookeeper')
+#        harness.add_relation_unit(cluster2, 'zookeeper/1')
+#        harness.update_relation_data(cluster2, 'zookeeper/1', {"myid":2, "endpoint": "ansiblezookeeper3.example.com:2888:3888"})
         zk = harness.charm
         zk._render_zk_properties()
         self.assertEqual(ZK_PROPERTIES,
@@ -68,12 +85,22 @@ class TestCharm(unittest.TestCase):
                              ctx=mock_render.call_args.kwargs["context"],
                              templ_file='zookeeper.properties.j2'))
 
-#    def test_config_changed(self):
-#        harness = Harness(ZookeeperCharm)
-#        self.addCleanup(harness.cleanup)
-#        harness.begin()
-#        harness.update_config({
-#            "distro": "confluent",
-#            "distro": "confluent",
-#        })
-#        self.assertEqual(list(harness.charm._stored.things), ["foo"])
+
+    def test_cluster_relation(self):
+        harness = Harness(charm.ZookeeperCharm)
+        self.addCleanup(harness.cleanup)
+        harness.begin()
+        harness.set_leader(True)
+        cluster1 = \
+            harness.add_relation('cluster', 'zookeeper')
+        harness.add_relation_unit(cluster1, 'zookeeper/0')
+        harness.update_relation_data(cluster1, 'zookeeper/0', {"myid":1, "endpoint": "ansiblezookeeper2.example.com:2888:3888"})
+        cluster2 = \
+            harness.add_relation('cluster', 'zookeeper')
+        harness.add_relation_unit(cluster2, 'zookeeper/1')
+        harness.update_relation_data(cluster2, 'zookeeper/1', {"myid":2, "endpoint": "ansiblezookeeper3.example.com:2888:3888"})
+        cluster3 = \
+            harness.add_relation('cluster', 'zookeeper')
+        harness.add_relation_unit(cluster3, 'zookeeper/2')
+        harness.update_relation_data(cluster3, 'zookeeper/2', {"myid":3, "endpoint": "ansiblezookeeper1.example.com:2888:3888"})
+        zk = harness.charm

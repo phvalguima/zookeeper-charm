@@ -78,7 +78,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._render_zk_properties()
 
     def _on_cluster_relation_changed(self, event):
-        self._on_config_changed()
+        self._on_config_changed(event)
 
     def _check_if_ready(self):
         if not self.cluster.is_ready:
