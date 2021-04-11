@@ -94,11 +94,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         zk_props = self.config.get("zookeeper-properties", "") or {}
         if self.is_client_ssl_enabled():
             CreateKeystoreAndTrustore(
+            PKCS12CreateKeystore(
                 "/var/ssl/private/zookeeper.keystore.jks",
-                "/var/ssl/private/zookeeper.truststore.jks",
-                self.config.get("regenerate-keystore-truststore", False),
                 self.ks.ks_password,
-                self.ks.ts_password,
                 self.config["ssl_cert"],
                 self.config["ssl_key"],
                 user=self.config.get('zookeeper-user'),
@@ -108,7 +106,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
             zk_props["authProvider.x509"] = \
                 "org.apache.zookeeper.server.auth.X509AuthenticationProvider"
-            zk_props["sslQuorum"] = "false"  # We change this later down the line
+            zk_props["sslQuorum"] = "false"  # We change this later down the line if needed
             zk_props["ssl.clientAuth"] = \
                 "none" if not self.config["mtls-enabled"] else "need"
             zk_props["ssl.keyStore.location"] = \
@@ -117,6 +115,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             zk_props["ssl.trustStore.location"] = \
                 "/var/ssl/private/zookeeper.truststore.jks"
             zk_props["ssl.trustStore.password"] = self.ks.ts_password
+            # Now that mTLS is set, we announce it to the neighbours
+            self.zk.set_mTLS_auth(self.config["ssl_cert"],
+                                  "/var/ssl/private/zookeeper.truststore.jks",
+                                  self.ks.ts_password)
 
         # As described on: https://zookeeper.apache.org/doc/r3.5.7/zookeeperAdmin.html#Quorum+TLS
         if self.config.get("ssl_quorum", False):
@@ -128,7 +130,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 "/var/ssl/private/zookeeper.quorum.keystore.jks",
                 self.ks.ks_password,
                 self.sslquorum.quorum_cert,
-                self.sslquorum.quorum_key)
+                self.sslquorum.quorum_key,
+                user=self.config.get('zookeeper-user'),
+                group=self.config.get('zookeeper-group'),
+                mode=0o640)
             # TODO(pguimaraes): cluster.py should be the one checking the ssl_quorum_chain
             # on each of the units and creating a truststore on a predefined place.
             # The method below should advise the cluster unit to publish its own certificate
