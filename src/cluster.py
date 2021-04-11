@@ -90,7 +90,7 @@ class ZookeeperCluster(Object):
                 # existing cluster
                 live_cluster = False
                 for u in self._relation.units:
-                    if int(self._relations[u]["myid"]) == 1:
+                    if int(self._relation.data[u]["myid"]) == 1:
                         live_cluster = True
                         break
                 # Then, although we are the leader, we should not pick

@@ -16,9 +16,10 @@ from charmhelpers.core.host import (
     service_reload
 )
 
-from src.kafka_common.java import KafkaJavaCharmBase
+from wand.apps.kafka import KafkaJavaCharmBase
 from .cluster import ZookeeperCluster
-from src.kafka_common.zookeeper import ZookeeperProvidesRelation
+from wand.apps.relations.zookeeper import ZookeeperProvidesRelation
+from wand.security.ssl import CreateKeystoreAndTruststore
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
 
     def _on_install(self, event):
         packages = []
-# TODO: IMPLEMENT IT
-#        self._install_tarball()
+        # TODO: IMPLEMENT IT
+        # self._install_tarball()
         if self.distro == "confluent":
             packages = self.CONFLUENT_PACKAGES
         else:
@@ -91,26 +92,58 @@ class ZookeeperCharm(KafkaJavaCharmBase):
 
     def _render_zk_properties(self):
         zk_props = self.config.get("zookeeper-properties", "") or {}
-        if self.is_ssl_enabled():
+        if self.is_client_ssl_enabled():
+            CreateKeystoreAndTrustore(
+                "/var/ssl/private/zookeeper.keystore.jks",
+                "/var/ssl/private/zookeeper.truststore.jks",
+                self.config.get("regenerate-keystore-truststore", False),
+                self.ks.ks_password,
+                self.ks.ts_password,
+                self.config["ssl_cert"],
+                self.config["ssl_key"],
+                user=self.config.get('zookeeper-user'),
+                group=self.config.get('zookeeper-group'),
+                mode=0o640)
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
             zk_props["authProvider.x509"] = \
                 "org.apache.zookeeper.server.auth.X509AuthenticationProvider"
-            zk_props["sslQuorum"] = "true"
+            zk_props["sslQuorum"] = "false"  # We change this later down the line
             zk_props["ssl.clientAuth"] = \
                 "none" if not self.config["mtls-enabled"] else "need"
             zk_props["ssl.keyStore.location"] = \
                 "/var/ssl/private/zookeeper.keystore.jks"
             zk_props["ssl.keyStore.password"] = self.ks.ks_password
+            zk_props["ssl.trustStore.location"] = \
+                "/var/ssl/private/zookeeper.truststore.jks"
+            zk_props["ssl.trustStore.password"] = self.ks.ts_password
+
+        # As described on: https://zookeeper.apache.org/doc/r3.5.7/zookeeperAdmin.html#Quorum+TLS
+        if self.config.get("ssl_quorum", False):
+            zk_props["serverCnxnFactory"] = \
+                "org.apache.zookeeper.server.NettyServerCnxnFactory"
+            # TODO(pguimaraes): the sslquorum should be a StoredState with cert/key.
+            # This cert/key should be mounted either via action or vault relation
+            PKCS12CreateKeystore(
+                "/var/ssl/private/zookeeper.quorum.keystore.jks",
+                self.ks.ks_password,
+                self.sslquorum.quorum_cert,
+                self.sslquorum.quorum_key)
+            # TODO(pguimaraes): cluster.py should be the one checking the ssl_quorum_chain
+            # on each of the units and creating a truststore on a predefined place.
+            # The method below should advise the cluster unit to publish its own certificate
+            # to the peers and save their certs on a truststore on:
+            # /var/ssl/private/zookeeper.quorum.keystore.jks
+            cluster.enable_ssl_quorum(self.sslquorum.quorum_cert,
+                                      "/var/ssl/private/zookeeper.quorum.keystore.jks"
+                                      self.ks.ts_password)
             zk_props["ssl.quorum.keyStore.location"] = \
                 "/var/ssl/private/zookeeper.keystore.jks"
             zk_props["ssl.quorum.keyStore.password"] = self.ks.ks_password
             zk_props["ssl.quorum.trustStore.location"] = \
                 "/var/ssl/private/zookeeper.truststore.jks"
             zk_props["ssl.quorum.trustStore.password"] = self.ks.ts_password
-            zk_props["ssl.trustStore.location"] = \
-                "/var/ssl/private/zookeeper.truststore.jks"
-            zk_props["ssl.trustStore.password"] = self.ks.ts_password
+            zk_props["sslQuorum"] = "true"
 
         if not self.cluster.is_ready:
             # We leave this condition once myid is set across the units

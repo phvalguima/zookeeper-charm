@@ -5,6 +5,17 @@ syncLimit=2
 autopurge.snapRetainCount=10
 autopurge.purgeInterval=1
 admin.enableServer=False
+server.1=ansiblezookeeper2.example.com:2888:3888
+server.2=ansiblezookeeper3.example.com:2888:3888
+server.3=ansiblezookeeper1.example.com:2888:3888
+"""
+
+ZK_PROPERTIES_COMPLETE="""maxClientCnxns=0
+initLimit=5
+syncLimit=2
+autopurge.snapRetainCount=10
+autopurge.purgeInterval=1
+admin.enableServer=False
 authProvider.sasl=org.apache.zookeeper.server.auth.SASLAuthenticationProvider
 authProvider.x509=org.apache.zookeeper.server.auth.X509AuthenticationProvider
 dataDir=/var/lib/zookeeper

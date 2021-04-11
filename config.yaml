@@ -39,21 +39,42 @@ options:
     type: boolean
     description: |
       EXPERIMENTAL: this setting is still not enabled by default
-  ssl_ca:
-    default: ''
-    type: string
-    description: |
-      CA certificate chain in base64
   ssl_cert:
     default: ''
     type: string
     description: |
-      Certificate with CA certificate chain to be used in base64
+      Certificate + CA chain to be used in base64. Format to be converted should be:
+      -----BEGIN CERTIFICATE-----
+      <Primary cert in PEM format for your-domain>
+      -----END CERTIFICATE-----
+      -----BEGIN CERTIFICATE-----
+      <First intermediate CA certificate>
+      -----END CERTIFICATE-----
+      . . . . .
+      (there may be more than one intermediate cert)
+      . . . . .
+      -----BEGIN CERTIFICATE-----
+      <root-ca>
+      -----END CERTIFICATE-----
+      Pass the file with the certificate chain above as:
+      $ juju config <your-charm> ssl_cert="$(cat <crt file> | base64 -w0)"
+      Or in the bundle, using: include-base64://<path to crt file>
   ssl_key:
     default: ''
     type: string
     description: |
       Key to be used in base64
+  ssl_quorum:
+    default: False
+    type: boolean
+    description: |
+      EXPERIMENTAL: enable sslQuorum (https://zookeeper.apache.org/doc/r3.5.7/zookeeperAdmin.html#Quorum+TLS)
+      Which is SSL encryption used for quorum and leader election communication protocols.
+      In production, each zookeeper unit should receive its own cert/key pair with CN set for its own $(hostname -f) output.
+      One keystore (quorum keystore) is generated to hold both key and cert of sslQuorum; and certs are shared
+      across the truststore.
+      The charm allows a per-unit set of sslQuorum cert/key pair either using Vault or actions:
+      $ juju run-action --wait set-keypair-ssl-quorum cert="$(cat cert | base64 -w0)" key="$(cat key | base64 -w0)"
   mtls-enabled:
     default: False
     type: boolean
