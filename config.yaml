@@ -80,12 +80,12 @@ options:
     type: boolean
     description: |
       EXPERIMENTAL: enable mTLS support
-  zookeeper-user:
+  user:
     default: 'cp-kafka'
     type: string
     description: |
       User set for kafka broker services
-  zookeeper-group:
+  group:
     default: 'confluent'
     type: string
     description: |
@@ -162,7 +162,6 @@ options:
     description: |
       YAML formatted list of extra arguments to be added to [Service] field of the service.
       User, Group are overrided by the respective configs on the charm.
-      ExecStart is overriden if install_method == archive.
     default: ''
   zookeeper-properties:
     type: string

@@ -70,9 +70,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                       data_dir,
                                       data_log_fs,
                                       data_fs,
-                                      self.config.get("zookeeper-user",
+                                      self.config.get("user",
                                                       "cp-kafka"),
-                                      self.config.get("zookeeper-group",
+                                      self.config.get("group",
                                                       "confluent"),
                                       self.config.get("fs-options", None)
                                       )
@@ -93,14 +93,13 @@ class ZookeeperCharm(KafkaJavaCharmBase):
     def _render_zk_properties(self):
         zk_props = self.config.get("zookeeper-properties", "") or {}
         if self.is_client_ssl_enabled():
-            CreateKeystoreAndTrustore(
             PKCS12CreateKeystore(
                 "/var/ssl/private/zookeeper.keystore.jks",
                 self.ks.ks_password,
                 self.config["ssl_cert"],
                 self.config["ssl_key"],
-                user=self.config.get('zookeeper-user'),
-                group=self.config.get('zookeeper-group'),
+                user=self.config.get('user'),
+                group=self.config.get('group'),
                 mode=0o640)
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
@@ -131,8 +130,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 self.ks.ks_password,
                 self.sslquorum.quorum_cert,
                 self.sslquorum.quorum_key,
-                user=self.config.get('zookeeper-user'),
-                group=self.config.get('zookeeper-group'),
+                user=self.config.get('user'),
+                group=self.config.get('group'),
                 mode=0o640)
             # TODO(pguimaraes): cluster.py should be the one checking the ssl_quorum_chain
             # on each of the units and creating a truststore on a predefined place.
@@ -160,8 +159,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 zk_list[i]["endpoint"]
         render(source="zookeeper.properties.j2",
                target="/etc/kafka/zookeeper.properties",
-               owner=self.config.get('zookeeper-user'),
-               group=self.config.get("zookeeper-group"),
+               owner=self.config.get('user'),
+               group=self.config.get("group"),
                perms=0o640,
                context={
                    "zk_props": zk_props
@@ -172,8 +171,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             "INFO, stdout, zkAppender"
         render(source="zookeeper_log4j.properties.j2",
                target="/etc/kafka/zookeeper-log4j.properties",
-               owner=self.config.get('zookeeper-user'),
-               group=self.config.get("zookeeper-group"),
+               owner=self.config.get('user'),
+               group=self.config.get("group"),
                perms=0o640,
                context={
                    "root_logger": root_logger
@@ -208,9 +207,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 .format(self.config.get("jmx-exporter-port", 8079))
 
         zookeeper_service_overrides["User"] = \
-            "".formatself.config.get('zookeeper-user')
+            "".formatself.config.get('user')
         zookeeper_service_overrides["Group"] = \
-            self.config.get('zookeeper-group')
+            self.config.get('group')
         if self.config.get("install_method", "").lower() == "archive":
             zookeeper_service_overrides["ExecStart"] = \
                 "/usr/bin/zookeeper-server-start " + \
@@ -223,8 +222,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             raise Exception("Not Implemented Yet")
         render(source="override.conf.j2",
                target=target,
-               owner=self.config.get('zookeeper-user'),
-               group=self.config.get("zookeeper-group"),
+               owner=self.config.get('user'),
+               group=self.config.get("group"),
                perms=0o644,
                context={
                    "zookeeper_service_unit_overrides": zookeeper_service_unit_overrides,
