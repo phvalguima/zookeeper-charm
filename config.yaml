@@ -20,15 +20,25 @@ options:
     description: |
       Sets the kafka version for the given distro.
   keystore-path:
-    default: ''
+    default: '/var/ssl/private/zookeeper.keystore.jks'
     type: string
     description: |
       Path to the keystore
   truststore-path:
-    default: ''
+    default: '/var/ssl/private/zookeeper.truststore.jks'
     type: string
     description: |
       Path to the truststore
+  quorum-keystore-path:
+    default: '/var/ssl/private/zookeeper.quorum.keystore.jks'
+    type: string
+    description: |
+      Path to keystore for quorum
+  quorum-truststore-path:
+    default: '/var/ssl/private/zookeeper.quorum.truststore.jks'
+    type: string
+    description: |
+      Path to truststore for quorum
   regenerate-keystore-truststore:
     default: False
     type: boolean
@@ -39,6 +49,11 @@ options:
     type: boolean
     description: |
       EXPERIMENTAL: this setting is still not enabled by default
+  generate-root-ca:
+    default: False
+    type: string
+    description: |
+      Generate self-signed cert/key for all certificate endpoints.
   ssl_cert:
     default: ''
     type: string
@@ -60,6 +75,31 @@ options:
       $ juju config <your-charm> ssl_cert="$(cat <crt file> | base64 -w0)"
       Or in the bundle, using: include-base64://<path to crt file>
   ssl_key:
+    default: ''
+    type: string
+    description: |
+      Key to be used in base64
+  ssl-quorum-cert:
+    default: ''
+    type: string
+    description: |
+      Certificate + CA chain to be used in base64 for the quorum communication
+      -----BEGIN CERTIFICATE-----
+      <Primary cert in PEM format for your-domain>
+      -----END CERTIFICATE-----
+      -----BEGIN CERTIFICATE-----
+      <First intermediate CA certificate>
+      -----END CERTIFICATE-----
+      . . . . .
+      (there may be more than one intermediate cert)
+      . . . . .
+      -----BEGIN CERTIFICATE-----
+      <root-ca>
+      -----END CERTIFICATE-----
+      Pass the file with the certificate chain above as:
+      $ juju config <your-charm> ssl_cert="$(cat <crt file> | base64 -w0)"
+      Or in the bundle, using: include-base64://<path to crt file>
+  ssl-quorum-key:
     default: ''
     type: string
     description: |
@@ -135,7 +175,7 @@ options:
   data-dir:
     type: string
     default: |
-      ext4: "/var/lib/kafka/zookeeper"
+      ext4: "/var/lib/zookeeper"
     description: |
       Folder to be used for zookeeper data. Formatted as YAML the same way as data-log-dir
       In case rootfs is chosen, fs option will be ignored

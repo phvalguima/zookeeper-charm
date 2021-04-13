@@ -2,12 +2,13 @@
 # Copyright 2021 pguimaraes
 # See LICENSE file for licensing details.
 
+import base64
 import logging
+import os
 import yaml
 
 from ops.main import main
 from ops.model import BlockedStatus, ActiveStatus
-
 
 from charmhelpers.core.templating import render
 from charmhelpers.core.host import (
@@ -19,7 +20,9 @@ from charmhelpers.core.host import (
 from wand.apps.kafka import KafkaJavaCharmBase
 from .cluster import ZookeeperCluster
 from wand.apps.relations.zookeeper import ZookeeperProvidesRelation
-from wand.security.ssl import CreateKeystoreAndTruststore
+from wand.security.ssl import PKCS12CreateKeystore
+from wand.security.ssl import genRandomPassword
+from wand.security.ssl import generateSelfSigned
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +51,98 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                             self.config.get('clientPort',
                                                             2182))
         self.cluster = ZookeeperCluster(self, 'cluster')
+        self.ks.set_default(quorum_cert="")
+        self.ks.set_default(quorum_key="")
+        self.ks.set_default(ssl_cert="")
+        self.ks.set_default(ssl_key="")
+        os.makedirs("/var/ssl/private", exist_ok=True)
+        self._generate_keystores()
+
+    def get_ssl_cert(self):
+        if len(self.ks.ssl_cert) > 0:
+            return self.ks.ssl_cert
+        return base64.b64decode(self.config["ssl_cert"]).decode("ascii")
+
+    def get_ssl_key(self):
+        if len(self.ks.ssl_key) > 0:
+            return self.ks.ssl_key
+        return base64.b64decode(self.config["ssl_key"]).decode("ascii")
+
+    def get_quorum_cert(self):
+        # TODO(pguimaraes): expand it to count with certificates relation or action cert/key
+        if len(self.ks.quorum_cert) > 0:
+            return self.ks.quorum_cert
+        return base64.b64decode(self.config["ssl-quorum-cert"]).decode("ascii")
+
+    def get_quorum_key(self):
+        # TODO(pguimaraes): expand it to count with certificates relation or action cert/key
+        if len(self.ks.quorum_key) > 0:
+            return self.ks.quorum_key
+        return base64.b64decode(self.config["ssl-quorum-key"]).decode("ascii")
+
+    @property
+    def unit_folder(self):
+        # Using as a method so we can also mock it on unit tests
+        return os.getenv("JUJU_CHARM_DIR")
+
+    def _generate_keystores(self):
+        if self.config["generate-root-ca"]:
+            self.ks.quorum_cert, self.ks.quorum_key = \
+                generateSelfSigned(self.unit_folder,
+                                   certname="quorum-zookeeper-root-ca",
+                                   user=self.config["user"],
+                                   group=self.config["group"],
+                                   mode=0o640)
+            self.ks.ssl_cert, self.ks.ssl_key = \
+                generateSelfSigned(self.unit_folder,
+                                   certname="ssl-zookeeper-root-ca",
+                                   user=self.config["user"],
+                                   group=self.config["group"],
+                                   mode=0o640)
+        else:
+            # Certs already set either as configs or certificates relation
+            self.ks.quorum_cert  = self.get_quorum_cert()
+            self.ks.quorum_key = self.get_quorum_key()
+            self.ks.ssl_cert = self.get_ssl_cert()
+            self.ks.ssl_key = self.get_ssl_key()
+        self.ks.ks_zookeeper_pwd = genRandomPassword()
+        self.ks.ts_zookeeper_pwd = genRandomPassword()
+        if len(self.ks.quorum_cert) > 0 and \
+           len(self.ks.quorum_key) > 0:
+            filename = genRandomPassword(6)
+            PKCS12CreateKeystore(
+                self.config.get("quorum-keystore-path",
+                                "/var/ssl/private/" +
+                                "zookeeper.quorum.keystore.jks"),
+                self.ks.ks_zookeeper_pwd,
+                self.get_quorum_cert(),
+                self.get_quorum_key(),
+                user=self.config["user"],
+                group=self.config["group"],
+                mode=0o640,
+                openssl_chain_path="/tmp/" + filename + ".chain",
+                openssl_key_path="/tmp/" + filename + ".key",
+                openssl_p12_path="/tmp/" + filename + ".p12")
+        if len(self.ks.ssl_cert) > 0 and \
+           len(self.ks.ssl_key) > 0:
+            filename = genRandomPassword(6)
+            PKCS12CreateKeystore(
+                self.config.get(
+                    "keystore-path",
+                    "/var/ssl/private/zookeeper.keystore.jks"),
+                self.ks.ks_password,
+                self.get_ssl_cert(),
+                self.get_ssl_key(),
+                user=self.config["user"],
+                group=self.config["group"],
+                mode=0o640,
+                openssl_chain_path="/tmp/" + filename + ".chain",
+                openssl_key_path="/tmp/" + filename + ".key",
+                openssl_p12_path="/tmp/" + filename + ".p12")
 
     def _on_install(self, event):
         packages = []
-        # TODO: IMPLEMENT IT
+        # TODO(pguimares): implement install_tarball logic
         # self._install_tarball()
         if self.distro == "confluent":
             packages = self.CONFLUENT_PACKAGES
@@ -60,10 +151,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         super().install_packages('openjdk-11-headless', packages)
         # The logic below avoid an error such as more than one entry
         # In this case, we will pick the first entry
-        data_log_fs, data_log_dir = \
-            [k for k, v in self.config["data-log-dir"]][0]
-        data_fs, data_dir = \
-            [k for k, v in self.config["data-dir"]][0]
+        data_log_fs = list(self.config["data-log-dir"].items())[0][0]
+        data_log_dir = list(self.config["data-log-dir"].items())[0][1]
+        data_fs = list(self.config["data-dir"].items())[0][0]
+        data_dir = list(self.config["data-dir"].items())[0][1]
         self.create_data_and_log_dirs(self.config["data-log-device"],
                                       self.config["data-device"],
                                       data_log_dir,
@@ -76,7 +167,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                                       "confluent"),
                                       self.config.get("fs-options", None)
                                       )
-        self._render_zk_properties()
 
     def _on_cluster_relation_changed(self, event):
         self._on_config_changed(event)
@@ -92,61 +182,86 @@ class ZookeeperCharm(KafkaJavaCharmBase):
 
     def _render_zk_properties(self):
         zk_props = self.config.get("zookeeper-properties", "") or {}
-        if self.is_client_ssl_enabled():
-            PKCS12CreateKeystore(
-                "/var/ssl/private/zookeeper.keystore.jks",
-                self.ks.ks_password,
-                self.config["ssl_cert"],
-                self.config["ssl_key"],
-                user=self.config.get('user'),
-                group=self.config.get('group'),
-                mode=0o640)
+        zk_props["dataDir"] = \
+            list(yaml.safe_load(self.config["data-dir"]).items())[0][1]
+        zk_props["dataLogDir"] = \
+            list(yaml.safe_load(self.config["data-log-dir"]).items())[0][1]
+        if len(self.ks.ssl_cert) > 0 and \
+           len(self.ks.ssl_key) > 0:
+            zk_props["secureClientPort"] = self.config.get("clientPort", 2182)
+#            PKCS12CreateKeystore(
+#                self.config.get(
+#                    "keystore-path",
+#                    "/var/ssl/private/zookeeper.keystore.jks"),
+#                self.ks.ks_password,
+#                self.get_ssl_cert(),
+#                self.get_ssl_key(),
+#                user=self.config.get('user'),
+#                group=self.config.get('group'),
+#                mode=0o640)
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
             zk_props["authProvider.x509"] = \
                 "org.apache.zookeeper.server.auth.X509AuthenticationProvider"
-            zk_props["sslQuorum"] = "false"  # We change this later down the line if needed
-            zk_props["ssl.clientAuth"] = \
-                "none" if not self.config["mtls-enabled"] else "need"
+            # We change this later down the line if needed
+            zk_props["sslQuorum"] = "false"
+            # Used for client-server communication
+            zk_props["ssl.clientAuth"] = "need"
             zk_props["ssl.keyStore.location"] = \
-                "/var/ssl/private/zookeeper.keystore.jks"
+                self.config.get(
+                    "keystore-path",
+                    "/var/ssl/private/zookeeper.keystore.jks")
             zk_props["ssl.keyStore.password"] = self.ks.ks_password
             zk_props["ssl.trustStore.location"] = \
-                "/var/ssl/private/zookeeper.truststore.jks"
+                self.config.get(
+                    "truststore-path",
+                    "/var/ssl/private/zookeeper.truststore.jks")
             zk_props["ssl.trustStore.password"] = self.ks.ts_password
             # Now that mTLS is set, we announce it to the neighbours
             self.zk.set_mTLS_auth(self.config["ssl_cert"],
-                                  "/var/ssl/private/zookeeper.truststore.jks",
+                                  self.config.get(
+                                      "truststore-path",
+                                      "/var/ssl/private/zookeeper.truststore.jks"),
                                   self.ks.ts_password)
+        else:
+            zk_props["ssl.clientAuth"] = "none"
+            zk_props["clientPort"] = self.config.get("clientPort", 2182)
 
-        # As described on: https://zookeeper.apache.org/doc/r3.5.7/zookeeperAdmin.html#Quorum+TLS
+        # As described on:
+        # https://zookeeper.apache.org/doc/r3.5.7/ \
+        # zookeeperAdmin.html#Quorum+TLS
         if self.config.get("ssl_quorum", False):
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
-            # TODO(pguimaraes): the sslquorum should be a StoredState with cert/key.
-            # This cert/key should be mounted either via action or vault relation
-            PKCS12CreateKeystore(
-                "/var/ssl/private/zookeeper.quorum.keystore.jks",
-                self.ks.ks_password,
-                self.sslquorum.quorum_cert,
-                self.sslquorum.quorum_key,
-                user=self.config.get('user'),
-                group=self.config.get('group'),
+#            PKCS12CreateKeystore(
+#                self.config.get("quorum-keystore-path",
+#                                "/var/ssl/private/" +
+#                                "zookeeper.quorum.keystore.jks"),
+#                self.ks.ts_password,
+#                self.get_quorum_cert(),
+#                self.get_quorum_key(),
+#                user=self.config.get('user'),
+#                group=self.config.get('group'),
+#                mode=0o640)
+            self.cluster.set_ssl_keypair(
+                self.get_quorum_cert(),
+                self.config.get(
+                    "quorum-truststore-path",
+                    "/var/ssl/private/zookeeper.quorum.truststore.jks"),
+                self.ks.ts_zookeeper_pwd,
+                user=self.config["user"],
+                group=self.config["group"],
                 mode=0o640)
-            # TODO(pguimaraes): cluster.py should be the one checking the ssl_quorum_chain
-            # on each of the units and creating a truststore on a predefined place.
-            # The method below should advise the cluster unit to publish its own certificate
-            # to the peers and save their certs on a truststore on:
-            # /var/ssl/private/zookeeper.quorum.keystore.jks
-            cluster.enable_ssl_quorum(self.sslquorum.quorum_cert,
-                                      "/var/ssl/private/zookeeper.quorum.keystore.jks"
-                                      self.ks.ts_password)
             zk_props["ssl.quorum.keyStore.location"] = \
-                "/var/ssl/private/zookeeper.keystore.jks"
-            zk_props["ssl.quorum.keyStore.password"] = self.ks.ks_password
+                self.config.get(
+                    "quorum-keystore-path",
+                    "/var/ssl/private/zookeeper.quorum.keystore.jks")
+            zk_props["ssl.quorum.keyStore.password"] = self.ks.ks_zookeeper_pwd
             zk_props["ssl.quorum.trustStore.location"] = \
-                "/var/ssl/private/zookeeper.truststore.jks"
-            zk_props["ssl.quorum.trustStore.password"] = self.ks.ts_password
+                self.config.get(
+                    "quorum-truststore-path",
+                    "/var/ssl/private/zookeeper.truststore.jks")
+            zk_props["ssl.quorum.trustStore.password"] = self.ks.ts_zookeeper_pwd
             zk_props["sslQuorum"] = "true"
 
         if not self.cluster.is_ready:
@@ -226,16 +341,17 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                group=self.config.get("group"),
                perms=0o644,
                context={
-                   "zookeeper_service_unit_overrides": zookeeper_service_unit_overrides,
-                   "zookeeper_service_overrides": zookeeper_service_overrides,
-                   "zookeeper_service_environment_overrides": zookeeper_service_environment_overrides
+                   "zookeeper_service_unit_overrides": zookeeper_service_unit_overrides, # noqa
+                   "zookeeper_service_overrides": zookeeper_service_overrides, # noqa
+                   "zookeeper_service_environment_overrides": zookeeper_service_environment_overrides # noqa
                })
 
     def _on_config_changed(self, _):
         if self.distro == 'confluent':
-            self.service == 'confluent-zookeeper'
+            self.service = 'confluent-zookeeper'
         elif self.distro == "apache":
-            self.service == "zookeeper"
+            self.service = "zookeeper"
+        self._generate_keystores()
         self._render_zk_properties()
         self._render_zk_log4j_properties()
         self._render_service_file()
