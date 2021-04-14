@@ -45,6 +45,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         super().__init__(*args)
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
+        self.framework.observe(self.on.cluster_relation_joined,
+                               self._on_cluster_relation_joined)
         self.framework.observe(self.on.cluster_relation_changed,
                                self._on_cluster_relation_changed)
         self.framework.observe(self.on.zookeeper_relation_joined,
@@ -95,25 +97,20 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             return self.ks.quorum_key
         return base64.b64decode(self.config["ssl-quorum-key"]).decode("ascii")
 
-    @property
-    def unit_folder(self):
-        # Using as a method so we can also mock it on unit tests
-        return os.getenv("JUJU_CHARM_DIR")
-
     def _generate_keystores(self):
         if self.config["generate-root-ca"]:
             self.ks.quorum_cert, self.ks.quorum_key = \
                 generateSelfSigned(self.unit_folder,
-                                   certname="quorum-zookeeper-root-ca",
-                                   user=self.config["user"],
-                                   group=self.config["group"],
-                                   mode=0o640)
+                                   certname = "quorum-zookeeper-root-ca",
+                                   user = self.config["user"],
+                                   group = self.config["group"],
+                                   mode = 0o640)
             self.ks.ssl_cert, self.ks.ssl_key = \
                 generateSelfSigned(self.unit_folder,
-                                   certname="ssl-zookeeper-root-ca",
-                                   user=self.config["user"],
-                                   group=self.config["group"],
-                                   mode=0o640)
+                                   certname = "ssl-zookeeper-root-ca",
+                                   user = self.config["user"],
+                                   group = self.config["group"],
+                                   mode = 0o640)
         else:
             # Certs already set either as configs or certificates relation
             self.ks.quorum_cert = self.get_quorum_cert()
@@ -180,10 +177,14 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                                       "cp-kafka"),
                                       self.config.get("group",
                                                       "confluent"),
-                                      self.config.get("fs-options", None)
-                                      )
+                                      self.config.get("fs-options", None))
+
+    def _on_cluster_relation_joined(self, event):
+        self.cluster.on_cluster_relation_joined(event)
+        self._on_config_changed(event)
 
     def _on_cluster_relation_changed(self, event):
+        self.cluster.on_cluster_relation_changed(event)
         self._on_config_changed(event)
 
     def _check_if_ready(self):
@@ -290,59 +291,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                    "root_logger": root_logger
                })
 
-    def _render_service_file(self):
-        zookeeper_service_unit_overrides = yaml.safe_load(
-            self.config.get('service-unit-overrides', ""))
-        zookeeper_service_overrides = yaml.safe_load(
-            self.config.get('service-overrides', ""))
-        zookeeper_service_environment_overrides = yaml.safe_load(
-            self.config.get('service-environment-overrides', ""))
-        if self.is_ssl_enabled():
-            zookeeper_service_environment_overrides["KAFKA_OPTS"] = \
-                zookeeper_service_environment_overrides["KAFKA_OPTS"] + \
-                "-Djdk.tls.ephemeralDHKeySize=2048"
-        if self.is_kerberos_enabled() or self.is_digest_enabled():
-            zookeeper_service_environment_overrides["KAFKA_OPTS"] = \
-                zookeeper_service_environment_overrides["KAFKA_OPTS"] + \
-                "-Djava.security.auth.login.config=" + \
-                "/etc/kafka/zookeeper_jaas.conf"
-        if self.is_jolokia_enabled():
-            zookeeper_service_environment_overrides["KAFKA_OPTS"] = \
-                zookeeper_service_environment_overrides["KAFKA_OPTS"] + \
-                "-javaagent:/opt/jolokia/jolokia.jar=" + \
-                "config=/etc/kafka/zookeeper_jolokia.properties"
-        if self.is_jmxexporter_enabled():
-            zookeeper_service_environment_overrides["KAFKA_OPTS"] = \
-                zookeeper_service_environment_overrides["KAFKA_OPTS"] + \
-                "-javaagent:/opt/prometheus/jmx_prometheus_javaagent.jar=" + \
-                "{}:/opt/prometheus/zookeeper.yml" \
-                .format(self.config.get("jmx-exporter-port", 8079))
-
-        zookeeper_service_overrides["User"] = \
-            "".formatself.config.get('user')
-        zookeeper_service_overrides["Group"] = \
-            self.config.get('group')
-        if self.config.get("install_method", "").lower() == "archive":
-            zookeeper_service_overrides["ExecStart"] = \
-                "/usr/bin/zookeeper-server-start " + \
-                "/etc/kafka/zookeeper.properties"
-        target = None
-        if self.distro == "confluent":
-            target = "/etc/systemd/system/" + \
-                     "confluent-zookeeper.service.d/override.conf"
-        elif self.distro == "apache":
-            raise Exception("Not Implemented Yet")
-        render(source="override.conf.j2",
-               target=target,
-               owner=self.config.get('user'),
-               group=self.config.get("group"),
-               perms=0o644,
-               context={
-                   "zookeeper_service_unit_overrides": zookeeper_service_unit_overrides, # noqa
-                   "zookeeper_service_overrides": zookeeper_service_overrides, # noqa
-                   "zookeeper_service_environment_overrides": zookeeper_service_environment_overrides # noqa
-               })
-
     def _on_config_changed(self, _):
         if self.distro == 'confluent':
             self.service = 'confluent-zookeeper'
@@ -351,7 +299,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._generate_keystores()
         self._render_zk_properties()
         self._render_zk_log4j_properties()
-        self._render_service_file()
+        self.render_service_override_file()
         service_reload(self.service)
         service_restart(self.service)
         self._check_if_ready()

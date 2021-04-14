@@ -110,7 +110,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(host, 'service_restart')
     @patch.object(host, 'service_reload')
     @patch.object(host, 'service_running')
-    @patch.object(charm.ZookeeperCharm, '_render_service_file')
+    @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
     @patch.object(charm.ZookeeperCharm, '_render_zk_log4j_properties')
     @patch.object(charm.ZookeeperCharm, 'is_client_ssl_enabled')
     @patch.object(charm.ZookeeperCluster, "get_peers",

@@ -152,17 +152,20 @@ options:
     default: ""
     description: |
       Device to be used to store the data folder.
+      This value cannot be changed post deployment of a unit.
       If unset, the folder will be created directly on the rootfs
   data-log-device:
     type: string
     default: ""
     description: |
       Device to be used to store the data-log folder.
+      This value cannot be changed post deployment of a unit.
       If unset, the folder will be created directly on the rootfs
   fs-options:
     type: string
     description: |
       Filesystem options for data-*-dir options.
+      This value cannot be changed post deployment of a unit.
   data-log-dir:
     type: string
     default: |

@@ -19,10 +19,6 @@ class ZookeeperCluster(Object):
         self._charm = charm
         self._unit = charm.unit
         self._relation_name = relation_name
-        self.framework.observe(charm.on.cluster_relation_changed,
-                               self.on_cluster_relation_changed)
-        self.framework.observe(charm.on.cluster_relation_joined,
-                               self.on_cluster_relation_joined)
         self.state.set_default(myid=-1)
         self.state.set_default(status=self.NOT_READY)
         self.state.set_default(zk_dict="{}")
@@ -122,12 +118,6 @@ class ZookeeperCluster(Object):
 
     def on_cluster_relation_joined(self, event):
         pass
-
-    def _find_next_available_id(self):
-        idlist = []
-        for u in self.relation.units:
-            idlist.append(int(self._relations[u]["myid"]))
-        return max(idlist) + 1
 
     def on_cluster_relation_changed(self, event):
         self._get_all_tls_certs()
