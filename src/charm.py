@@ -47,6 +47,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.framework.observe(self.on.config_changed, self._on_config_changed)
         self.framework.observe(self.on.cluster_relation_changed,
                                self._on_cluster_relation_changed)
+        self.framework.observe(self.on.zookeeper_relation_joined,
+                               self.on_zookeeper_relation_joined)
+        self.framework.observe(self.on.zookeeper_relation_changed,
+                               self.on_zookeeper_relation_changed)
         self.zk = ZookeeperProvidesRelation(self, 'zookeeper',
                                             self.config.get('clientPort',
                                                             2182))
@@ -57,6 +61,15 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(ssl_key="")
         os.makedirs("/var/ssl/private", exist_ok=True)
         self._generate_keystores()
+
+    def on_zookeeper_relation_joined(self, event):
+        self.zk.on_zookeeper_relation_joined(event)
+
+    def on_zookeeper_relation_changed(self, event):
+        self.zk.user = self.config.get("user", "")
+        self.zk.group = self.config.get("group", "")
+        self.zk.mode = 0o640
+        self.zk.on_zookeeper_relation_changed(event)
 
     def get_ssl_cert(self):
         if len(self.ks.ssl_cert) > 0:
