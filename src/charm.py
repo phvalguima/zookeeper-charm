@@ -69,13 +69,15 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         return base64.b64decode(self.config["ssl_key"]).decode("ascii")
 
     def get_quorum_cert(self):
-        # TODO(pguimaraes): expand it to count with certificates relation or action cert/key
+        # TODO(pguimaraes): expand it to count
+        # with certificates relation or action cert/key
         if len(self.ks.quorum_cert) > 0:
             return self.ks.quorum_cert
         return base64.b64decode(self.config["ssl-quorum-cert"]).decode("ascii")
 
     def get_quorum_key(self):
-        # TODO(pguimaraes): expand it to count with certificates relation or action cert/key
+        # TODO(pguimaraes): expand it to count
+        # with certificates relation or action cert/key
         if len(self.ks.quorum_key) > 0:
             return self.ks.quorum_key
         return base64.b64decode(self.config["ssl-quorum-key"]).decode("ascii")
@@ -101,7 +103,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                    mode=0o640)
         else:
             # Certs already set either as configs or certificates relation
-            self.ks.quorum_cert  = self.get_quorum_cert()
+            self.ks.quorum_cert = self.get_quorum_cert()
             self.ks.quorum_key = self.get_quorum_key()
             self.ks.ssl_cert = self.get_ssl_cert()
             self.ks.ssl_key = self.get_ssl_key()
@@ -189,16 +191,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         if len(self.ks.ssl_cert) > 0 and \
            len(self.ks.ssl_key) > 0:
             zk_props["secureClientPort"] = self.config.get("clientPort", 2182)
-#            PKCS12CreateKeystore(
-#                self.config.get(
-#                    "keystore-path",
-#                    "/var/ssl/private/zookeeper.keystore.jks"),
-#                self.ks.ks_password,
-#                self.get_ssl_cert(),
-#                self.get_ssl_key(),
-#                user=self.config.get('user'),
-#                group=self.config.get('group'),
-#                mode=0o640)
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
             zk_props["authProvider.x509"] = \
@@ -218,11 +210,12 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                     "/var/ssl/private/zookeeper.truststore.jks")
             zk_props["ssl.trustStore.password"] = self.ks.ts_password
             # Now that mTLS is set, we announce it to the neighbours
-            self.zk.set_mTLS_auth(self.config["ssl_cert"],
-                                  self.config.get(
-                                      "truststore-path",
-                                      "/var/ssl/private/zookeeper.truststore.jks"),
-                                  self.ks.ts_password)
+            self.zk.set_mTLS_auth(
+                self.config["ssl_cert"],
+                self.config.get(
+                    "truststore-path",
+                    "/var/ssl/private/zookeeper.truststore.jks"),
+                self.ks.ts_password)
         else:
             zk_props["ssl.clientAuth"] = "none"
             zk_props["clientPort"] = self.config.get("clientPort", 2182)
@@ -233,16 +226,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         if self.config.get("ssl_quorum", False):
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
-#            PKCS12CreateKeystore(
-#                self.config.get("quorum-keystore-path",
-#                                "/var/ssl/private/" +
-#                                "zookeeper.quorum.keystore.jks"),
-#                self.ks.ts_password,
-#                self.get_quorum_cert(),
-#                self.get_quorum_key(),
-#                user=self.config.get('user'),
-#                group=self.config.get('group'),
-#                mode=0o640)
             self.cluster.set_ssl_keypair(
                 self.get_quorum_cert(),
                 self.config.get(
@@ -261,7 +244,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 self.config.get(
                     "quorum-truststore-path",
                     "/var/ssl/private/zookeeper.truststore.jks")
-            zk_props["ssl.quorum.trustStore.password"] = self.ks.ts_zookeeper_pwd
+            zk_props["ssl.quorum.trustStore.password"] = \
+                self.ks.ts_zookeeper_pwd
             zk_props["sslQuorum"] = "true"
 
         if not self.cluster.is_ready:

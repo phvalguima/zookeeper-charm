@@ -1,7 +1,6 @@
 # Copyright 2021 pguimaraes
 # See LICENSE file for licensing details.
 
-import getpass
 import os
 import unittest
 from mock import patch
@@ -12,11 +11,9 @@ import src.charm as charm
 import src.cluster as cluster
 import charmhelpers.core.host as host
 import charmhelpers.fetch.ubuntu as ubuntu
-import charmhelpers.core.templating as template
 
 from unit_tests.config_files import ZK_PROPERTIES
 from unit_tests.config_files import ZK_PROPERTIES_WITH_SSL
-import charmhelpers.core.host as host
 
 from wand.contrib.linux import getCurrentUserAndGroup
 import wand.apps.relations.zookeeper as zkRelation
@@ -33,6 +30,7 @@ TO_PATCH_HOST = [
     'service_restart',
     'service_reload'
 ]
+
 
 class MockRelation(object):
     def __init__(self, data):
@@ -51,7 +49,7 @@ class MockRelation(object):
 # Although it is intended for internal use, it is ideal to
 # load config options without firing a hook config-changed
 class TestCharm(unittest.TestCase):
-    maxDiff = None # print the entire diff on assert commands
+    maxDiff = None  # print the entire diff on assert commands
 
     def _patch(self, obj, method):
         _m = patch.object(obj, method)
@@ -61,7 +59,7 @@ class TestCharm(unittest.TestCase):
 
     def _simulate_render(self, ctx=None, templ_file=""):
         import jinja2
-        env=jinja2.Environment(loader=jinja2.FileSystemLoader('templates'))
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader('templates'))
         templ = env.get_template(templ_file)
         doc = templ.render(ctx)
         return doc
@@ -73,9 +71,12 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(host, p)
 
-    @patch.object(charm.ZookeeperCharm, 'is_client_ssl_enabled')
-    @patch.object(charm.ZookeeperCluster, "get_peers", new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCluster, "is_ready", new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCharm,
+                  'is_client_ssl_enabled')
+    @patch.object(charm.ZookeeperCluster, "get_peers",
+                  new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCluster, "is_ready",
+                  new_callable=PropertyMock)
     @patch.object(charm, "render")
     def test_confluent_simple_render_zk_props(self, mock_render,
                                               mock_is_ready,
@@ -86,9 +87,9 @@ class TestCharm(unittest.TestCase):
         mock_is_ready.return_value = True
         mock_is_client_ssl.return_value = False
         mock_get_peers.return_value = [
-            { "myid": 1, "endpoint": "ansiblezookeeper2.example.com:2888:3888" },
-            { "myid": 2, "endpoint": "ansiblezookeeper3.example.com:2888:3888" },
-            { "myid": 3, "endpoint": "ansiblezookeeper1.example.com:2888:3888" },
+            {"myid": 1, "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
+            {"myid": 2, "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
+            {"myid": 3, "endpoint": "ansiblezookeeper1.example.com:2888:3888"},
         ]
         harness = Harness(charm.ZookeeperCharm)
         self.addCleanup(harness.cleanup)
@@ -103,7 +104,8 @@ class TestCharm(unittest.TestCase):
     @patch.object(kafka.KafkaJavaCharmBase, "create_data_and_log_dirs")
     @patch.object(zkRelation.ZookeeperProvidesRelation, "set_mTLS_auth")
     @patch.object(cluster.ZookeeperCluster, "set_ssl_keypair")
-    @patch.object(charm.ZookeeperCharm, "unit_folder", new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCharm, "unit_folder",
+                  new_callable=PropertyMock)
     @patch.object(charm.ZookeeperCharm, '_check_if_ready')
     @patch.object(host, 'service_restart')
     @patch.object(host, 'service_reload')
@@ -111,8 +113,10 @@ class TestCharm(unittest.TestCase):
     @patch.object(charm.ZookeeperCharm, '_render_service_file')
     @patch.object(charm.ZookeeperCharm, '_render_zk_log4j_properties')
     @patch.object(charm.ZookeeperCharm, 'is_client_ssl_enabled')
-    @patch.object(charm.ZookeeperCluster, "get_peers", new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCluster, "is_ready", new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCluster, "get_peers",
+                  new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCluster, "is_ready",
+                  new_callable=PropertyMock)
     @patch.object(charm, "render")
     def test_confluent_ssl_render_zk_props(self,
                                            mock_render,
@@ -130,10 +134,13 @@ class TestCharm(unittest.TestCase):
                                            mock_mtls_auth,
                                            mock_create_log_dir):
         def __cleanup():
-            for i in ["/tmp/ks-charm.p12", "/tmp/ks-charm*", "/tmp/test-quorum-*", "/tmp/3jtieo-ks.jks", "/tmp/3jtieo-ts.jks", "/tmp/3jtieo-quorum-ks.jks", "/tmp/3jtieo-quorum-ts.jks"]:
+            for i in ["/tmp/ks-charm.p12", "/tmp/ks-charm*",
+                      "/tmp/test-quorum-*", "/tmp/3jtieo-ks.jks",
+                      "/tmp/3jtieo-ts.jks", "/tmp/3jtieo-quorum-ks.jks",
+                      "/tmp/3jtieo-quorum-ts.jks"]:
                 try:
                     os.remove(i)
-                except:
+                except: # noqa
                     pass
         __cleanup()
         mock_svc_running.return_value = True
@@ -142,29 +149,37 @@ class TestCharm(unittest.TestCase):
         mock_is_ready.return_value = True
         mock_is_client_ssl.return_value = False
         mock_get_peers.return_value = [
-            { "myid": 1, "endpoint": "ansiblezookeeper2.example.com:2888:3888" },
-            { "myid": 2, "endpoint": "ansiblezookeeper3.example.com:2888:3888" },
-            { "myid": 3, "endpoint": "ansiblezookeeper1.example.com:2888:3888" },
+            {"myid": 1,
+             "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
+            {"myid": 2,
+             "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
+            {"myid": 3,
+             "endpoint": "ansiblezookeeper1.example.com:2888:3888"},
         ]
         harness = Harness(charm.ZookeeperCharm)
         self.addCleanup(harness.cleanup)
         harness.begin()
-        zk = harness.charm
-        harness.update_config(key_values={"user": getCurrentUserAndGroup()[0],
-                                          "group": getCurrentUserAndGroup()[1],
-                                          "quorum-keystore-path": "/tmp/3jtieo-quorum-ks.jks",
-                                          "quorum-truststore-path": "/tmp/3jtieo-quorum-ts.jks",
-                                          "keystore-path": "/tmp/3jtieo-ks.jks",
-                                          "truststore-path": "/tmp/3jtieo-ts.jks",
-                                          "generate-root-ca": True, "ssl_quorum": True})
+        harness.update_config(
+            key_values={"user": getCurrentUserAndGroup()[0],
+                        "group": getCurrentUserAndGroup()[1],
+                        "quorum-keystore-path": "/tmp/3jtieo-quorum-ks.jks",
+                        "quorum-truststore-path": "/tmp/3jtieo-quorum-ts.jks",
+                        "keystore-path": "/tmp/3jtieo-ks.jks",
+                        "truststore-path": "/tmp/3jtieo-ts.jks",
+                        "generate-root-ca": True, "ssl_quorum": True})
         # Replace the random variables for expected ones
         # since it is not possible to check them
         ctx = mock_render.call_args.kwargs["context"]
-        ctx["zk_props"]["ssl.quorum.trustStore.password"] = "confluenttruststorepass"
-        ctx["zk_props"]["ssl.quorum.keyStore.password"] = "confluentkeystorestorepass"
-        ctx["zk_props"]["ssl.trustStore.password"] = "confluenttruststorepass"
-        ctx["zk_props"]["ssl.keyStore.password"] = "confluentkeystorestorepass"
-        zk_props = self._simulate_render(ctx=ctx,
+        ctx["zk_props"]["ssl.quorum.trustStore.password"] = \
+            "confluenttruststorepass"
+        ctx["zk_props"]["ssl.quorum.keyStore.password"] = \
+            "confluentkeystorestorepass"
+        ctx["zk_props"]["ssl.trustStore.password"] = \
+            "confluenttruststorepass"
+        ctx["zk_props"]["ssl.keyStore.password"] = \
+            "confluentkeystorestorepass"
+        zk_props = self._simulate_render(
+                       ctx=ctx,
                        templ_file='zookeeper.properties.j2')
         self.assertEqual(ZK_PROPERTIES_WITH_SSL, zk_props)
         __cleanup()
