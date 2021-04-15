@@ -69,7 +69,7 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_FETCH:
             self._patch(ubuntu, p)
         for p in TO_PATCH_HOST:
-            self._patch(host, p)
+            self._patch(charm, p)
 
     @patch.object(charm.ZookeeperCharm,
                   'is_client_ssl_enabled')

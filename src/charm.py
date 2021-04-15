@@ -61,6 +61,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(quorum_key="")
         self.ks.set_default(ssl_cert="")
         self.ks.set_default(ssl_key="")
+        self.ks.set_default(ts_zookeeper_pwd="")
+        self.ks.set_default(ks_zookeeper_pwd="")
         os.makedirs("/var/ssl/private", exist_ok=True)
         self._generate_keystores()
 
@@ -74,58 +76,84 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.zk.on_zookeeper_relation_changed(event)
 
     def get_ssl_cert(self):
-        if len(self.ks.ssl_cert) > 0:
+        if self.config["generate-root-ca"]:
             return self.ks.ssl_cert
         return base64.b64decode(self.config["ssl_cert"]).decode("ascii")
 
     def get_ssl_key(self):
-        if len(self.ks.ssl_key) > 0:
+        if self.config["generate-root-ca"]:
             return self.ks.ssl_key
         return base64.b64decode(self.config["ssl_key"]).decode("ascii")
 
     def get_quorum_cert(self):
-        # TODO(pguimaraes): expand it to count
-        # with certificates relation or action cert/key
-        if len(self.ks.quorum_cert) > 0:
+        if self.config["generate-root-ca"]:
             return self.ks.quorum_cert
         return base64.b64decode(self.config["ssl-quorum-cert"]).decode("ascii")
 
     def get_quorum_key(self):
-        # TODO(pguimaraes): expand it to count
-        # with certificates relation or action cert/key
-        if len(self.ks.quorum_key) > 0:
+        if self.config["generate-root-ca"]:
             return self.ks.quorum_key
         return base64.b64decode(self.config["ssl-quorum-key"]).decode("ascii")
 
+    def get_ssl_keystore(self):
+        path = self.config.get("keystore-path",
+                               "/var/ssl/private/kafka_ssl_ks.jks")
+        return path
+
+    def get_ssl_truststore(self):
+        path = self.config.get("truststore-path",
+                               "/var/ssl/private/kafka_ssl_ks.jks")
+        return path
+
+    def get_quorum_keystore(self):
+        path = self.config.get("quorum-keystore-path",
+                               "/var/ssl/private/kafka_quorum_ks.jks")
+        return path
+
+    def get_quorum_truststore(self):
+        path = self.config.get("quorum-truststore-path",
+                               "/var/ssl/private,kafka_quorum_ts.jks")
+        return path
+
     def _generate_keystores(self):
+        if self.config["generate-root-ca"] and \
+            (len(self.ks.quorum_cert) > 0 and
+             len(self.ks.quorum_key) > 0 and
+             len(self.ks.ssl_cert) > 0 and
+             len(self.ks.ssl_key) > 0):
+            return
         if self.config["generate-root-ca"]:
             self.ks.quorum_cert, self.ks.quorum_key = \
                 generateSelfSigned(self.unit_folder,
-                                   certname = "quorum-zookeeper-root-ca",
-                                   user = self.config["user"],
-                                   group = self.config["group"],
-                                   mode = 0o640)
+                                   certname="quorum-zookeeper-root-ca",
+                                   user=self.config["user"],
+                                   group=self.config["group"],
+                                   mode=0o640)
             self.ks.ssl_cert, self.ks.ssl_key = \
                 generateSelfSigned(self.unit_folder,
-                                   certname = "ssl-zookeeper-root-ca",
-                                   user = self.config["user"],
-                                   group = self.config["group"],
-                                   mode = 0o640)
+                                   certname="ssl-zookeeper-root-ca",
+                                   user=self.config["user"],
+                                   group=self.config["group"],
+                                   mode=0o640)
         else:
+            # Check if the certificates remain the same
+            if self.ks.quorum_cert == self.get_quorum_cert() and \
+                    self.ks.quorum_key == self.get_quorum_key() and \
+                    self.ks.ssl_cert == self.get_ssl_cert() and \
+                    self.ks.quorum_key == self.get_quorum_key():
+                # Yes, they do, leave this method as there is nothing to do.
+                return
             # Certs already set either as configs or certificates relation
             self.ks.quorum_cert = self.get_quorum_cert()
             self.ks.quorum_key = self.get_quorum_key()
             self.ks.ssl_cert = self.get_ssl_cert()
             self.ks.ssl_key = self.get_ssl_key()
-        self.ks.ks_zookeeper_pwd = genRandomPassword()
-        self.ks.ts_zookeeper_pwd = genRandomPassword()
         if len(self.ks.quorum_cert) > 0 and \
            len(self.ks.quorum_key) > 0:
+            self.ks.ks_zookeeper_pwd = genRandomPassword()
             filename = genRandomPassword(6)
             PKCS12CreateKeystore(
-                self.config.get("quorum-keystore-path",
-                                "/var/ssl/private/" +
-                                "zookeeper.quorum.keystore.jks"),
+                self.get_quorum_keystore(),
                 self.ks.ks_zookeeper_pwd,
                 self.get_quorum_cert(),
                 self.get_quorum_key(),
@@ -137,11 +165,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 openssl_p12_path="/tmp/" + filename + ".p12")
         if len(self.ks.ssl_cert) > 0 and \
            len(self.ks.ssl_key) > 0:
+            self.ks.ks_password = genRandomPassword()
             filename = genRandomPassword(6)
             PKCS12CreateKeystore(
-                self.config.get(
-                    "keystore-path",
-                    "/var/ssl/private/zookeeper.keystore.jks"),
+                self.get_ssl_keystore(),
                 self.ks.ks_password,
                 self.get_ssl_cert(),
                 self.get_ssl_key(),
@@ -178,6 +205,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                       self.config.get("group",
                                                       "confluent"),
                                       self.config.get("fs-options", None))
+        self._on_config_changed(event)
 
     def _on_cluster_relation_joined(self, event):
         self.cluster.on_cluster_relation_joined(event)
@@ -242,22 +270,16 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
             self.cluster.set_ssl_keypair(
                 self.get_quorum_cert(),
-                self.config.get(
-                    "quorum-truststore-path",
-                    "/var/ssl/private/zookeeper.quorum.truststore.jks"),
+                self.get_quorum_truststore(),
                 self.ks.ts_zookeeper_pwd,
                 user=self.config["user"],
                 group=self.config["group"],
                 mode=0o640)
             zk_props["ssl.quorum.keyStore.location"] = \
-                self.config.get(
-                    "quorum-keystore-path",
-                    "/var/ssl/private/zookeeper.quorum.keystore.jks")
+                self.get_quorum_keystore()
             zk_props["ssl.quorum.keyStore.password"] = self.ks.ks_zookeeper_pwd
             zk_props["ssl.quorum.trustStore.location"] = \
-                self.config.get(
-                    "quorum-truststore-path",
-                    "/var/ssl/private/zookeeper.truststore.jks")
+                self.get_quorum_truststore()
             zk_props["ssl.quorum.trustStore.password"] = \
                 self.ks.ts_zookeeper_pwd
             zk_props["sslQuorum"] = "true"

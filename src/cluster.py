@@ -72,9 +72,8 @@ class ZookeeperCluster(Object):
         if not self.is_ssl_enabled:
             return
         self.state.trusted_certs = \
-            self.relation.data[self.unit]["tls_cert"] + \
-            "::" + "::".join([self.relation.data[u].get("tls_cert", "")
-                              for u in self.relation.units])
+            "::".join(list(self.relation.data[u].get("tls_cert", "")
+                           for u in self.relation.units))
         CreateTruststore(self.state.truststore_path,
                          self.state.truststore_pwd,
                          self.state.trusted_certs.split("::"),
