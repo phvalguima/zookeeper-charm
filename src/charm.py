@@ -18,8 +18,15 @@ from charmhelpers.core.host import (
 )
 
 from wand.apps.kafka import KafkaJavaCharmBase
-from .cluster import ZookeeperCluster
-from wand.apps.relations.zookeeper import ZookeeperProvidesRelation
+from cluster import ZookeeperCluster
+from wand.apps.relations.zookeeper import (
+    ZookeeperProvidesRelation
+)
+from wand.apps.relations.kafka_relation_base import (
+    KafkaRelationBaseNotUsedError,
+    KafkaRelationBaseTLSNotSetError
+)
+
 from wand.security.ssl import PKCS12CreateKeystore
 from wand.security.ssl import genRandomPassword
 from wand.security.ssl import generateSelfSigned
@@ -61,19 +68,30 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(quorum_key="")
         self.ks.set_default(ssl_cert="")
         self.ks.set_default(ssl_key="")
-        self.ks.set_default(ts_zookeeper_pwd="")
-        self.ks.set_default(ks_zookeeper_pwd="")
+        self.ks.set_default(ts_zookeeper_pwd=genRandomPassword())
+        self.ks.set_default(ks_zookeeper_pwd=genRandomPassword())
         os.makedirs("/var/ssl/private", exist_ok=True)
-        self._generate_keystores()
 
     def on_zookeeper_relation_joined(self, event):
-        self.zk.on_zookeeper_relation_joined(event)
+        try:
+            self.zk.on_zookeeper_relation_joined(event)
+        except KafkaRelationBaseNotUsedError as e:
+            # Relation not been used any other application, move on
+            logger.info(str(e))
+        except KafkaRelationBaseTLSNotSetError as e:
+            BlockedStatus(str(e))
 
     def on_zookeeper_relation_changed(self, event):
         self.zk.user = self.config.get("user", "")
         self.zk.group = self.config.get("group", "")
         self.zk.mode = 0o640
-        self.zk.on_zookeeper_relation_changed(event)
+        try:
+            self.zk.on_zookeeper_relation_changed(event)
+        except KafkaRelationBaseNotUsedError as e:
+            # Relation not been used any other application, move on
+            logger.info(str(e))
+        except KafkaRelationBaseTLSNotSetError as e:
+            BlockedStatus(str(e))
 
     def get_ssl_cert(self):
         if self.config["generate-root-ca"]:
@@ -162,7 +180,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 mode=0o640,
                 openssl_chain_path="/tmp/" + filename + ".chain",
                 openssl_key_path="/tmp/" + filename + ".key",
-                openssl_p12_path="/tmp/" + filename + ".p12")
+                openssl_p12_path="/tmp/" + filename + ".p12",
+                ks_regenerate=self.config.get(
+                                  "regenerate-keystore-truststore", False))
         if len(self.ks.ssl_cert) > 0 and \
            len(self.ks.ssl_key) > 0:
             self.ks.ks_password = genRandomPassword()
@@ -177,9 +197,12 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 mode=0o640,
                 openssl_chain_path="/tmp/" + filename + ".chain",
                 openssl_key_path="/tmp/" + filename + ".key",
-                openssl_p12_path="/tmp/" + filename + ".p12")
+                openssl_p12_path="/tmp/" + filename + ".p12",
+                ks_regenerate=self.config.get(
+                                  "regenerate-keystore-truststore", False))
 
     def _on_install(self, event):
+        super()._on_install(event)
         packages = []
         # TODO(pguimares): implement install_tarball logic
         # self._install_tarball()
@@ -190,10 +213,18 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         super().install_packages('openjdk-11-headless', packages)
         # The logic below avoid an error such as more than one entry
         # In this case, we will pick the first entry
-        data_log_fs = list(self.config["data-log-dir"].items())[0][0]
-        data_log_dir = list(self.config["data-log-dir"].items())[0][1]
-        data_fs = list(self.config["data-dir"].items())[0][0]
-        data_dir = list(self.config["data-dir"].items())[0][1]
+        data_log_fs = \
+            list(yaml.safe_load(
+                     self.config.get("data-log-dir", {})).items())[0][0]
+        data_log_dir = \
+            list(yaml.safe_load(
+                     self.config.get("data-log-dir", {})).items())[0][1]
+        data_fs = \
+            list(yaml.safe_load(
+                     self.config.get("data-dir", {})).items())[0][0]
+        data_dir = \
+            list(yaml.safe_load(
+                     self.config.get("data-dir", {})).items())[0][1]
         self.create_data_and_log_dirs(self.config["data-log-device"],
                                       self.config["data-device"],
                                       data_log_dir,
@@ -225,7 +256,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         ActiveStatus("{} running".format(self.service))
 
     def _render_zk_properties(self):
-        zk_props = self.config.get("zookeeper-properties", "") or {}
+        zk_props = \
+            yaml.safe_load(self.config.get("zookeeper-properties", "")) or {}
         zk_props["dataDir"] = \
             list(yaml.safe_load(self.config["data-dir"]).items())[0][1]
         zk_props["dataLogDir"] = \
@@ -252,12 +284,19 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                     "/var/ssl/private/zookeeper.truststore.jks")
             zk_props["ssl.trustStore.password"] = self.ks.ts_password
             # Now that mTLS is set, we announce it to the neighbours
-            self.zk.set_mTLS_auth(
-                self.config["ssl_cert"],
-                self.config.get(
-                    "truststore-path",
-                    "/var/ssl/private/zookeeper.truststore.jks"),
-                self.ks.ts_password)
+            try:
+                self.zk.set_mTLS_auth(
+                    self.config["ssl_cert"],
+                    self.config.get(
+                        "truststore-path",
+                        "/var/ssl/private/zookeeper.truststore.jks"),
+                    self.ks.ts_password)
+            except KafkaRelationBaseNotUsedError as e:
+                # Relation not been used any other application, move on
+                logger.info(str(e))
+            except KafkaRelationBaseTLSNotSetError as e:
+                BlockedStatus(str(e))
+
         else:
             zk_props["ssl.clientAuth"] = "none"
             zk_props["clientPort"] = self.config.get("clientPort", 2182)
@@ -313,7 +352,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                    "root_logger": root_logger
                })
 
-    def _on_config_changed(self, _):
+    def _on_config_changed(self, event):
         if self.distro == 'confluent':
             self.service = 'confluent-zookeeper'
         elif self.distro == "apache":

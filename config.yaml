@@ -40,10 +40,11 @@ options:
     description: |
       Path to truststore for quorum
   regenerate-keystore-truststore:
-    default: False
+    default: True
     type: boolean
     description: |
-      If set to True, force charm to regenerate trust and keystore
+      If set to True, force charm to regenerate trust and keystore for every charm changes.
+      Setting to False is still EXPERIMENTAL
   ssl_mutual_auth_enabled:
     default: False
     type: boolean
@@ -51,7 +52,7 @@ options:
       EXPERIMENTAL: this setting is still not enabled by default
   generate-root-ca:
     default: False
-    type: string
+    type: boolean
     description: |
       Generate self-signed cert/key for all certificate endpoints.
   ssl_cert:
@@ -178,7 +179,7 @@ options:
   data-dir:
     type: string
     default: |
-      ext4: "/var/lib/zookeeper"
+      ext4: /var/lib/zookeeper
     description: |
       Folder to be used for zookeeper data. Formatted as YAML the same way as data-log-dir
       In case rootfs is chosen, fs option will be ignored
@@ -211,7 +212,7 @@ options:
     description: |
       Settings to be added to zookeeper.properties file.
       YAML formatted list of items
-    default:
+    default: |
       maxClientCnxns: 0
       initLimit: 5
       syncLimit: 2

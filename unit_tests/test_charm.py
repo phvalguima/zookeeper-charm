@@ -7,8 +7,8 @@ from mock import patch
 from mock import PropertyMock
 
 from ops.testing import Harness
-import src.charm as charm
-import src.cluster as cluster
+import charm as charm
+import cluster as cluster
 import charmhelpers.core.host as host
 import charmhelpers.fetch.ubuntu as ubuntu
 
@@ -18,6 +18,11 @@ from unit_tests.config_files import ZK_PROPERTIES_WITH_SSL
 from wand.contrib.linux import getCurrentUserAndGroup
 import wand.apps.relations.zookeeper as zkRelation
 import wand.apps.kafka as kafka
+
+TO_PATCH_LINUX = [
+    'userAdd',
+    'groupAdd'
+]
 
 TO_PATCH_FETCH = [
     'apt_install',
@@ -32,13 +37,18 @@ TO_PATCH_HOST = [
 ]
 
 
-class MockRelation(object):
+class MockRelations(object):
     def __init__(self, data):
         self._data = data
 
     @property
     def data(self):
         return self._data
+
+    # Assuming just one relation exists
+    @property
+    def relations(self):
+        return {"relation": self._data}
 
     @property
     def units(self):
@@ -66,6 +76,8 @@ class TestCharm(unittest.TestCase):
 
     def setUp(self):
         super(TestCharm, self).setUp()
+        for p in TO_PATCH_LINUX:
+            self._patch(kafka, p)
         for p in TO_PATCH_FETCH:
             self._patch(ubuntu, p)
         for p in TO_PATCH_HOST:
@@ -102,7 +114,7 @@ class TestCharm(unittest.TestCase):
                              templ_file='zookeeper.properties.j2'))
 
     @patch.object(kafka.KafkaJavaCharmBase, "create_data_and_log_dirs")
-    @patch.object(zkRelation.ZookeeperProvidesRelation, "set_mTLS_auth")
+    @patch.object(zkRelation.ZookeeperProvidesRelation, "set_TLS_auth")
     @patch.object(cluster.ZookeeperCluster, "set_ssl_keypair")
     @patch.object(charm.ZookeeperCharm, "unit_folder",
                   new_callable=PropertyMock)
@@ -131,7 +143,7 @@ class TestCharm(unittest.TestCase):
                                            mock_check_if_ready,
                                            mock_unit_folder,
                                            mock_cluster_ssl_keypair,
-                                           mock_mtls_auth,
+                                           mock_tls_auth,
                                            mock_create_log_dir):
         def __cleanup():
             for i in ["/tmp/ks-charm.p12", "/tmp/ks-charm*",
@@ -166,7 +178,9 @@ class TestCharm(unittest.TestCase):
                         "quorum-truststore-path": "/tmp/3jtieo-quorum-ts.jks",
                         "keystore-path": "/tmp/3jtieo-ks.jks",
                         "truststore-path": "/tmp/3jtieo-ts.jks",
-                        "generate-root-ca": True, "ssl_quorum": True})
+                        "generate-root-ca": True,
+                        "regenerate-keystore-truststore": True,
+                        "ssl_quorum": True})
         # Replace the random variables for expected ones
         # since it is not possible to check them
         ctx = mock_render.call_args.kwargs["context"]

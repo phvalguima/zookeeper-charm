@@ -4,8 +4,8 @@ from mock import patch
 from mock import PropertyMock
 
 from ops.testing import Harness
-import src.charm as charm
-import src.cluster as cluster
+import charm as charm
+import cluster as cluster
 
 import wand.security.ssl as security
 from wand.security.ssl import genRandomPassword
