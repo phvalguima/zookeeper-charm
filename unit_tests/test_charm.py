@@ -7,6 +7,7 @@ from mock import patch
 from mock import PropertyMock
 
 from ops.testing import Harness
+import ops.model as model
 import charm as charm
 import cluster as cluster
 import charmhelpers.core.host as host
@@ -31,6 +32,7 @@ TO_PATCH_FETCH = [
 ]
 
 TO_PATCH_HOST = [
+    'service_resume',
     'service_running',
     'service_restart',
     'service_reload'
@@ -48,7 +50,7 @@ class MockRelations(object):
     # Assuming just one relation exists
     @property
     def relations(self):
-        return {"relation": self._data}
+        return [self]
 
     @property
     def units(self):
@@ -83,57 +85,83 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
+    @patch.object(cluster.ZookeeperCluster, "relations",
+                  new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
+    @patch.object(model.Model, "get_binding")
+    @patch.object(cluster, "get_hostname")
+    @patch.object(cluster.ZookeeperCluster, "unit",
+                  new_callable=PropertyMock)
+    @patch.object(cluster.ZookeeperCluster, "relation",
+                  new_callable=PropertyMock)
     @patch.object(charm.ZookeeperCharm,
                   'is_client_ssl_enabled')
-    @patch.object(charm.ZookeeperCluster, "get_peers",
-                  new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCluster, "is_ready",
-                  new_callable=PropertyMock)
     @patch.object(charm, "render")
     def test_confluent_simple_render_zk_props(self, mock_render,
-                                              mock_is_ready,
-                                              mock_get_peers,
-                                              mock_is_client_ssl):
+                                              mock_is_client_ssl,
+                                              mock_cluster_relation,
+                                              mock_cluster_unit,
+                                              mock_hostname,
+                                              mock_get_binding,
+                                              mock_svc_override,
+                                              mock_cluster_relations,
+                                              mock_folders_perms):
 
+        mock_hostname.return_value = "ansiblezookeeper2.example.com"
+        mock_cluster_relation.return_value = MockRelations(data={
+            "zk/0": {"myid": 1,
+                     "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
+            "zk/1": {"myid": 2,
+                     "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
+            "zk/2": {"myid": 3,
+                     "endpoint": "ansiblezookeeper1.example.com:2888:3888"}
+        })
+        mock_cluster_relations.return_value = \
+            mock_cluster_relation.return_value.relations
+        mock_cluster_unit.return_value = "zk/0"
         mock_render.return_value = ""
-        mock_is_ready.return_value = True
         mock_is_client_ssl.return_value = False
-        mock_get_peers.return_value = [
-            {"myid": 1, "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
-            {"myid": 2, "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
-            {"myid": 3, "endpoint": "ansiblezookeeper1.example.com:2888:3888"},
-        ]
         harness = Harness(charm.ZookeeperCharm)
         self.addCleanup(harness.cleanup)
         harness.begin()
+        harness._update_config({
+            "cluster-count": 3
+        })
         zk = harness.charm
+        zk.cluster.state.myid = 1
+        zk._on_cluster_relation_changed(None)
         zk._render_zk_properties()
         self.assertEqual(ZK_PROPERTIES,
                          self._simulate_render(
                              ctx=mock_render.call_args.kwargs["context"],
                              templ_file='zookeeper.properties.j2'))
 
+    @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
+    @patch.object(cluster.ZookeeperCluster, "relations",
+                  new_callable=PropertyMock)
+    @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
+    @patch.object(model.Model, "get_binding")
+    @patch.object(cluster, "get_hostname")
+    @patch.object(cluster.ZookeeperCluster, "unit",
+                  new_callable=PropertyMock)
+    @patch.object(cluster.ZookeeperCluster, "relation",
+                  new_callable=PropertyMock)
     @patch.object(kafka.KafkaJavaCharmBase, "create_data_and_log_dirs")
     @patch.object(zkRelation.ZookeeperProvidesRelation, "set_TLS_auth")
     @patch.object(cluster.ZookeeperCluster, "set_ssl_keypair")
     @patch.object(charm.ZookeeperCharm, "unit_folder",
                   new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCharm, '_check_if_ready')
+    @patch.object(charm.ZookeeperCharm, '_check_if_ready_to_start')
     @patch.object(host, 'service_restart')
     @patch.object(host, 'service_reload')
     @patch.object(host, 'service_running')
     @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
     @patch.object(charm.ZookeeperCharm, '_render_zk_log4j_properties')
     @patch.object(charm.ZookeeperCharm, 'is_client_ssl_enabled')
-    @patch.object(charm.ZookeeperCluster, "get_peers",
-                  new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCluster, "is_ready",
-                  new_callable=PropertyMock)
     @patch.object(charm, "render")
     def test_confluent_ssl_render_zk_props(self,
                                            mock_render,
-                                           mock_is_ready,
-                                           mock_get_peers,
                                            mock_is_client_ssl,
                                            mock_log_4j,
                                            mock_svc_file,
@@ -144,7 +172,14 @@ class TestCharm(unittest.TestCase):
                                            mock_unit_folder,
                                            mock_cluster_ssl_keypair,
                                            mock_tls_auth,
-                                           mock_create_log_dir):
+                                           mock_create_log_dir,
+                                           mock_cluster_relation,
+                                           mock_cluster_unit,
+                                           mock_get_hostname,
+                                           mock_get_binding,
+                                           mock_svc_override,
+                                           mock_cluster_relations,
+                                           mock_folders_perms):
         def __cleanup():
             for i in ["/tmp/ks-charm.p12", "/tmp/ks-charm*",
                       "/tmp/test-quorum-*", "/tmp/3jtieo-ks.jks",
@@ -155,22 +190,28 @@ class TestCharm(unittest.TestCase):
                 except: # noqa
                     pass
         __cleanup()
+        mock_get_hostname.return_value = "ansiblezookeeper2.example.com"
+        mock_cluster_relation.return_value = MockRelations(data={
+            "zk/0": {"myid": 1,
+                     "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
+            "zk/1": {"myid": 2,
+                     "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
+            "zk/2": {"myid": 3,
+                     "endpoint": "ansiblezookeeper1.example.com:2888:3888"}
+        })
+        mock_cluster_relations.return_value = \
+            mock_cluster_relation.return_value.relations
+        mock_cluster_unit.return_value = "zk/0"
         mock_svc_running.return_value = True
         mock_render.return_value = ""
         mock_unit_folder.return_value = "/tmp"
-        mock_is_ready.return_value = True
         mock_is_client_ssl.return_value = False
-        mock_get_peers.return_value = [
-            {"myid": 1,
-             "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
-            {"myid": 2,
-             "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
-            {"myid": 3,
-             "endpoint": "ansiblezookeeper1.example.com:2888:3888"},
-        ]
         harness = Harness(charm.ZookeeperCharm)
         self.addCleanup(harness.cleanup)
         harness.begin()
+        zk = harness.charm
+        zk.cluster.state.myid = 1
+        zk._on_cluster_relation_changed(None)
         harness.update_config(
             key_values={"user": getCurrentUserAndGroup()[0],
                         "group": getCurrentUserAndGroup()[1],

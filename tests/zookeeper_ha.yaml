@@ -1,0 +1,26 @@
+variables:
+  version:  &version  "6.1"
+  distro:   &distro   "confluent"
+machines:
+  "0":
+    constraints: cores=2 mem=4G root-disk=20G
+  "1":
+    constraints: cores=2 mem=4G root-disk=20G
+  "2":
+    constraints: cores=2 mem=4G root-disk=20G
+applications:
+  zookeeper:
+    charm: ./zookeeper.charm
+    num_units: 3
+    config:
+      version: *version
+      distro: *distro
+      user: test
+      group: test
+      quorum-keystore-path: /var/ssl/private/quorum-ks.jks
+      quorum-truststore-path: /var/ssl/private/quorum-ts.jks
+      keystore-path: /var/ssl/private/ssl-ks.jks
+      # Only charms related to this ZK will be able to connect
+      truststore-path: /var/ssl/private/ssl-ts.jks
+      generate-root-ca: True
+      ssl_quorum: True

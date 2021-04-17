@@ -20,6 +20,10 @@ class MockRelation(object):
         return self._data
 
     @property
+    def relations(self):
+        return [self]
+
+    @property
     def units(self):
         return list(self._data.keys())
 
@@ -36,6 +40,8 @@ class TestCluster(unittest.TestCase):
     def setUp(self):
         super(TestCluster, self).setUp()
 
+    @patch.object(cluster.ZookeeperCluster, "relations",
+                  new_callable=PropertyMock)
     @patch.object(security, "setFilePermissions")
     @patch.object(cluster.ZookeeperCluster, "unit",
                   new_callable=PropertyMock)
@@ -44,7 +50,8 @@ class TestCluster(unittest.TestCase):
     def test_get_all_tls_certs(self,
                                mock_relation,
                                mock_unit,
-                               mock_perms):
+                               mock_perms,
+                               mock_relations):
         def __cleanup():
             for i in ["/tmp/testcert*", "/tmp/test-ts-quorum.jks"]:
                 try:
@@ -73,6 +80,7 @@ class TestCluster(unittest.TestCase):
                    "endpoint": "ansiblezookeeper1.example.com:2888:3888"}
         }
         mock_relation.return_value = MockRelation(data)
+        mock_relations.return_value = mock_relation.return_value.relations
         mock_unit.return_value = "u1"
         tspwd = genRandomPassword()
         zk.cluster.set_ssl_keypair(certs[1]["crt"], "/tmp/test-ts-quorum.jks",

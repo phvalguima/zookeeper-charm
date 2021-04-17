@@ -1,49 +1,45 @@
 import os
 import json
-from ops.framework import Object, StoredState
 from charmhelpers.contrib.network.ip import get_hostname
 
-from wand.security.ssl import CreateTruststore
+from wand.apps.relations.kafka_relation_base import KafkaRelationBase
+from wand.security.ssl import setFilePermissions
 
 
-class ZookeeperCluster(Object):
+class ZookeeperCluster(KafkaRelationBase):
 
     # This is the status management for this relation
     # While 0, we should not set this unit into ActiveStatus
     NOT_READY = 0
     READY = 1
-    state = StoredState()
 
-    def __init__(self, charm, relation_name):
+    def __init__(self, charm, relation_name, myidfolder, min_units=3):
         super().__init__(charm, relation_name)
-        self._charm = charm
-        self._unit = charm.unit
-        self._relation_name = relation_name
+        self._min_units = min_units
         self.state.set_default(myid=-1)
         self.state.set_default(status=self.NOT_READY)
         self.state.set_default(zk_dict="{}")
-        self.state.set_default(truststore_path="")
-        self.state.set_default(truststore_pwd="")
-        self.state.set_default(truststore_user="")
-        self.state.set_default(truststore_group="")
-        self.state.set_default(truststore_mode="")
-        self.state.set_default(trusted_certs="")
+        self.state.set_default(myidpath=str(os.path.join(myidfolder, "myid")))
+
+    @property
+    def min_units(self):
+        return self._min_units
+
+    @min_units.setter
+    def min_units(self, u):
+        self._min_units = u
 
     @property
     def relation(self):
         return self.framework.model.get_relation(self._relation_name)
 
     @property
-    def unit(self):
-        return self._unit
-
-    @property
     def truststore_path(self):
-        return self.state.truststore_path
+        return self.state.ts_path
 
     @property
     def truststore_pwd(self):
-        return self.state.truststore_pwd
+        return self.state.ts_pwd
 
     @property
     def trusted_certs(self):
@@ -51,6 +47,9 @@ class ZookeeperCluster(Object):
 
     @property
     def is_ssl_enabled(self):
+        if not self.relation:
+            # Cluster relation not used yet, setting TLS is irrelevant
+            return False
         if len(self.relation.data[self.unit].get("tls_cert", "")) > 0:
             return True
         return False
@@ -60,27 +59,8 @@ class ZookeeperCluster(Object):
                         ts_path,
                         ts_pwd,
                         user, group, mode):
-        self.relation.data[self.unit]["tls_cert"] = ssl_cert
-        self.state.truststore_path = ts_path
-        self.state.truststore_pwd = ts_pwd
-        self.state.truststore_user = user
-        self.state.truststore_group = group
-        self.state.truststore_mode = mode
-        self._get_all_tls_certs()
-
-    def _get_all_tls_certs(self):
-        if not self.is_ssl_enabled:
-            return
-        self.state.trusted_certs = \
-            "::".join(list(self.relation.data[u].get("tls_cert", "")
-                           for u in self.relation.units))
-        CreateTruststore(self.state.truststore_path,
-                         self.state.truststore_pwd,
-                         self.state.trusted_certs.split("::"),
-                         ts_regenerate=True,
-                         user=self.state.truststore_user,
-                         group=self.state.truststore_group,
-                         mode=self.state.truststore_mode)
+        self.set_TLS_auth(ssl_cert, ts_path, ts_pwd,
+                          user, group, mode)
 
     @property
     def _get_myid(self):
@@ -88,7 +68,10 @@ class ZookeeperCluster(Object):
 
     @property
     def is_ready(self):
-        if self.state.status == self.NOT_READY:
+        if not self.relation or self.min_units == 1:
+            # Cluster does not exist. Unit working as standalone
+            return True
+        if len(self.all_units(self.relation)) < self.min_units:
             return False
         return True
 
@@ -98,25 +81,13 @@ class ZookeeperCluster(Object):
 
     @property
     def myid_path(self):
-        return os.path.join(self._charm.config["data-dir"], "myid")
-
-    def _set_myid(self):
-        if self.state.myid > 0:
-            # Already defined, return the saved value
-            return
-        myidpath = os.path.join(self._charm.config["data-dir"], "myid")
-        myid = None
-        with open(myidpath, "r") as f:
-            myid = f.read()
-            f.close()
-        self.state.myid = int(myid)
-
-    @property
-    def _relations(self):
-        return self.framework.model.relations[self._relation_name]
+        return self.state.myidpath
 
     def on_cluster_relation_joined(self, event):
         pass
+
+    def _get_all_tls_certs(self):
+        super()._get_all_tls_cert()
 
     def on_cluster_relation_changed(self, event):
         self._get_all_tls_certs()
@@ -124,25 +95,27 @@ class ZookeeperCluster(Object):
         if self._get_myid <= 0:
             myid = int(self.unit.name.split("/")[1]) + 1
             with open(self.myid_path, "w") as f:
-                f.write(myid)
+                f.write(str(myid))
                 f.close()
+            setFilePermissions(self.myid_path,
+                               self.state.user,
+                               self.state.group,
+                               mode=0o640)
             self.state.myid = myid
-            self.relation.data[self.unit]["myid"] = myid
+            self.relation.data[self.unit]["myid"] = str(myid)
 
-        hostname = get_hostname(
-            self.model.get_binding(
-                self._relation_name).network.binding_address)
+        hostname = get_hostname(self.binding_addr)
 
-        peerPort = self._charm.config.get("peerPort", 2888)
-        leaderPort = self._charm.config.get("leaderPort", 3888)
+        peerPort = self.charm.config.get("peerPort", 2888)
+        leaderPort = self.charm.config.get("leaderPort", 3888)
         self.relation.data[self.unit]["endpoint"] = \
             "{}:{}:{}".format(hostname, peerPort,
                               leaderPort)
 
         zk_dict = {}
-        for u in self.relation.units:
-            if not self.relation.data[u]["endpoint"] or \
-               not self.relation.data[u]["myid"]:
+        for u in self.all_units(self.relation):
+            if "endpoint" not in self.relation.data[u] or \
+               "myid" not in self.relation.data[u]:
                 continue
             zk_dict[self.relation.data[u]["myid"]] = \
                 self.relation.data[u]["endpoint"]
