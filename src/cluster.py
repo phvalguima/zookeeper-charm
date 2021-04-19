@@ -1,9 +1,12 @@
 import os
 import json
-from charmhelpers.contrib.network.ip import get_hostname
+import logging
+from wand.contrib.linux import get_hostname
 
 from wand.apps.relations.kafka_relation_base import KafkaRelationBase
 from wand.security.ssl import setFilePermissions
+
+logger = logging.getLogger(__name__)
 
 
 class ZookeeperCluster(KafkaRelationBase):
@@ -102,21 +105,26 @@ class ZookeeperCluster(KafkaRelationBase):
                                self.state.group,
                                mode=0o640)
             self.state.myid = myid
-            self.relation.data[self.unit]["myid"] = str(myid)
+            event.relation.data[self.unit]["myid"] = str(myid)
 
         hostname = get_hostname(self.binding_addr)
+        logger.debug("Cluster Relation {}, binding address: "
+                     "{} and hostname found: {}".format(
+                         event.relation,
+                         self.binding_addr,
+                         hostname))
 
         peerPort = self.charm.config.get("peerPort", 2888)
         leaderPort = self.charm.config.get("leaderPort", 3888)
-        self.relation.data[self.unit]["endpoint"] = \
+        event.relation.data[self.unit]["endpoint"] = \
             "{}:{}:{}".format(hostname, peerPort,
                               leaderPort)
 
         zk_dict = {}
-        for u in self.all_units(self.relation):
-            if "endpoint" not in self.relation.data[u] or \
-               "myid" not in self.relation.data[u]:
+        for u in self.all_units(event.relation):
+            if "endpoint" not in event.relation.data[u] or \
+               "myid" not in event.relation.data[u]:
                 continue
-            zk_dict[self.relation.data[u]["myid"]] = \
-                self.relation.data[u]["endpoint"]
+            zk_dict[event.relation.data[u]["myid"]] = \
+                event.relation.data[u]["endpoint"]
         self.state.zk_dict = json.dumps(zk_dict)

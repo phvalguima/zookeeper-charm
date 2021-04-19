@@ -39,9 +39,27 @@ TO_PATCH_HOST = [
 ]
 
 
+class MockEvent(object):
+    def __init__(self, relations):
+        self._relations = relations
+
+    @property
+    def relation(self):
+        return self._relations
+
+
 class MockRelations(object):
     def __init__(self, data):
         self._data = data
+
+    @property
+    def network(self):
+        # Workaround for network.bind_address
+        return self
+
+    @property
+    def bind_address(self):
+        return "127.0.0.1"
 
     @property
     def data(self):
@@ -130,7 +148,8 @@ class TestCharm(unittest.TestCase):
         })
         zk = harness.charm
         zk.cluster.state.myid = 1
-        zk._on_cluster_relation_changed(None)
+        zk._on_cluster_relation_changed(
+            MockEvent(relations=mock_cluster_relation.return_value))
         zk._render_zk_properties()
         self.assertEqual(ZK_PROPERTIES,
                          self._simulate_render(
@@ -211,7 +230,8 @@ class TestCharm(unittest.TestCase):
         harness.begin()
         zk = harness.charm
         zk.cluster.state.myid = 1
-        zk._on_cluster_relation_changed(None)
+        zk._on_cluster_relation_changed(
+            MockEvent(relations=mock_cluster_relation.return_value))
         harness.update_config(
             key_values={"user": getCurrentUserAndGroup()[0],
                         "group": getCurrentUserAndGroup()[1],

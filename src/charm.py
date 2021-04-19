@@ -4,7 +4,6 @@
 
 import base64
 import logging
-import os
 import yaml
 
 from ops.main import main
@@ -82,13 +81,12 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(ssl_key="")
         self.ks.set_default(ts_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(ks_zookeeper_pwd=genRandomPassword())
-        # This folder needs to be set as root
-        os.makedirs("/var/ssl/private", exist_ok=True)
 
     def on_update_status(self, event):
         if not service_running(self.service):
             self.model.unit.status = \
                 BlockedStatus("{} not running".format(self.service))
+            return
         self.model.unit.status = \
             ActiveStatus("{} is running".format(self.service))
 
@@ -333,8 +331,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             list(yaml.safe_load(self.config["data-dir"]).items())[0][1]
         zk_props["dataLogDir"] = \
             list(yaml.safe_load(self.config["data-log-dir"]).items())[0][1]
-        if len(self.ks.ssl_cert) > 0 and \
-           len(self.ks.ssl_key) > 0:
+        if (len(self.get_ssl_cert()) > 0 and len(self.get_ssl_key()) > 0):
             zk_props["secureClientPort"] = self.config.get("clientPort", 2182)
             zk_props["serverCnxnFactory"] = \
                 "org.apache.zookeeper.server.NettyServerCnxnFactory"
@@ -349,11 +346,15 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                     "keystore-path",
                     "/var/ssl/private/zookeeper.keystore.jks")
             zk_props["ssl.keyStore.password"] = self.ks.ks_password
-            zk_props["ssl.trustStore.location"] = \
-                self.config.get(
-                    "truststore-path",
-                    "/var/ssl/private/zookeeper.truststore.jks")
-            zk_props["ssl.trustStore.password"] = self.ks.ts_password
+            # If truststore-path is unset, then it means the charm should use
+            # Java's standard truststore instead to connect to
+            if len(self.config.get("truststore-path", "")) > 0:
+                zk_props["ssl.trustStore.location"] = \
+                    self.config["truststore-path"]
+                zk_props["ssl.trustStore.password"] = self.ks.ts_password
+            else:
+                logger.debug("Truststore set for zookeeper relation, "
+                             "only charms will be able to connect")
             # Now that mTLS is set, we announce it to the neighbours
             try:
                 logger.debug("Passing on the cert to "

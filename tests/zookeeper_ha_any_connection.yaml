@@ -1,3 +1,4 @@
+series: bionic
 variables:
   version:  &version  "6.1"
   distro:   &distro   "confluent"
@@ -10,9 +11,9 @@ machines:
     constraints: cores=2 mem=4G root-disk=20G
 applications:
   zookeeper:
-    charm: ./zookeeper.charm
+    charm: ../zookeeper.charm
     num_units: 3
-    config:
+    options:
       version: *version
       distro: *distro
       user: test
@@ -20,7 +21,10 @@ applications:
       quorum-keystore-path: /var/ssl/private/quorum-ks.jks
       quorum-truststore-path: /var/ssl/private/quorum-ts.jks
       keystore-path: /var/ssl/private/ssl-ks.jks
-      # Leave it blank if planning to use standard java truststore
-      truststore-path:
-      generate-root-ca: True
-      ssl_quorum: True
+      truststore-path: 
+      generate-root-ca: true
+      ssl_quorum: true
+    to:
+    - 0
+    - 1
+    - 2

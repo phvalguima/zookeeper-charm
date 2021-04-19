@@ -30,7 +30,7 @@ options:
     description: |
       Path to the keystore
   truststore-path:
-    default: '/var/ssl/private/zookeeper.truststore.jks'
+    default: ''
     type: string
     description: |
       Path to the truststore
@@ -40,7 +40,7 @@ options:
     description: |
       Path to keystore for quorum
   quorum-truststore-path:
-    default: '/var/ssl/private/zookeeper.quorum.truststore.jks'
+    default: ''
     type: string
     description: |
       Path to truststore for quorum
@@ -111,7 +111,7 @@ options:
     description: |
       Key to be used in base64
   ssl_quorum:
-    default: False
+    default: false
     type: boolean
     description: |
       EXPERIMENTAL: enable sslQuorum (https://zookeeper.apache.org/doc/r3.5.7/zookeeperAdmin.html#Quorum+TLS)
