@@ -1,0 +1,39 @@
+series: bionic
+variables:
+  version:  &version  "6.1"
+  distro:   &distro   "confluent"
+machines:
+  "0":
+    constraints: cores=2 mem=4G root-disk=20G
+  "1":
+    constraints: cores=2 mem=4G root-disk=20G
+  "2":
+    constraints: cores=2 mem=4G root-disk=20G
+applications:
+  easyrsa:
+    charm: cs:~containers/easyrsa
+    num_units: 1
+    to:
+    - lxd:0
+  zookeeper:
+    charm: ../zookeeper.charm
+    num_units: 3
+    options:
+      version: *version
+      distro: *distro
+      user: test
+      group: test
+      quorum-keystore-path: /var/ssl/private/quorum-ks.jks
+      quorum-truststore-path: /var/ssl/private/quorum-ts.jks
+      keystore-path: /var/ssl/private/ssl-ks.jks
+      # Only charms related to this ZK will be able to connect
+      truststore-path: /var/ssl/private/ssl-ts.jks
+      generate-root-ca: false
+      ssl_quorum: true
+    to:
+    - 0
+    - 1
+    - 2
+relations:
+- - easyrsa
+  - zookeeper

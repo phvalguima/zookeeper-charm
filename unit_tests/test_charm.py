@@ -47,6 +47,9 @@ class MockEvent(object):
     def relation(self):
         return self._relations
 
+    def defer(self):
+        return
+
 
 class MockRelations(object):
     def __init__(self, data):
@@ -199,6 +202,7 @@ class TestCharm(unittest.TestCase):
                                            mock_svc_override,
                                            mock_cluster_relations,
                                            mock_folders_perms):
+
         def __cleanup():
             for i in ["/tmp/ks-charm.p12", "/tmp/ks-charm*",
                       "/tmp/test-quorum-*", "/tmp/3jtieo-ks.jks",

@@ -70,8 +70,12 @@ class ZookeeperCluster(KafkaRelationBase):
         return self.state.myid
 
     @property
+    def hostname(self):
+        return get_hostname(self.binding_addr)
+
+    @property
     def is_ready(self):
-        if not self.relation or self.min_units == 1:
+        if self.min_units == 1:
             # Cluster does not exist. Unit working as standalone
             return True
         if len(self.all_units(self.relation)) < self.min_units:

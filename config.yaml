@@ -110,7 +110,7 @@ options:
     type: string
     description: |
       Key to be used in base64
-  ssl_quorum:
+  sslQuorum:
     default: false
     type: boolean
     description: |
@@ -119,13 +119,12 @@ options:
       In production, each zookeeper unit should receive its own cert/key pair with CN set for its own $(hostname -f) output.
       One keystore (quorum keystore) is generated to hold both key and cert of sslQuorum; and certs are shared
       across the truststore.
-      The charm allows a per-unit set of sslQuorum cert/key pair either using Vault or actions:
-      $ juju run-action --wait set-keypair-ssl-quorum cert="$(cat cert | base64 -w0)" key="$(cat key | base64 -w0)"
-  mtls-enabled:
+  sslClientAuth:
     default: False
     type: boolean
     description: |
-      EXPERIMENTAL: enable mTLS support
+      EXPERIMENTAL: enable mTLS support and client authentication via TLS
+      More details: https://cwiki.apache.org/confluence/display/KAFKA/KIP-515%3A+Enable+ZK+client+to+use+the+new+TLS+supported+authentication
   user:
     default: 'cp-kafka'
     type: string
