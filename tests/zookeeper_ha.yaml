@@ -23,8 +23,9 @@ applications:
       keystore-path: /var/ssl/private/ssl-ks.jks
       # Only charms related to this ZK will be able to connect
       truststore-path: /var/ssl/private/ssl-ts.jks
-      generate-root-ca: true
-      ssl_quorum: true
+      generate-root-ca: false
+      sslQuorum: false
+      log4j-root-logger: "DEBUG, stdout, zkAppender"
     to:
     - 0
     - 1

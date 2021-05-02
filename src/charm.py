@@ -27,7 +27,10 @@ from wand.apps.relations.tls_certificates import (
     TLSCertificateDataNotFoundInRelationError,
     TLSCertificateRelationNotPresentError
 )
-from wand.apps.kafka import KafkaJavaCharmBase
+from wand.apps.kafka import (
+    KafkaJavaCharmBase,
+    KafkaCharmBaseMissingConfigError
+)
 from cluster import ZookeeperCluster
 from wand.apps.relations.zookeeper import (
     ZookeeperProvidesRelation
@@ -76,6 +79,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                self.on_certificates_relation_changed)
         self.framework.observe(self.on.update_status,
                                self.on_update_status)
+        self.framework.observe(self.on.upload_keytab_action,
+                               self.on_upload_keytab_action)
         self.zk = ZookeeperProvidesRelation(self, 'zookeeper',
                                             port=self.config.get('clientPort',
                                                                  2182))
@@ -94,13 +99,16 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(ts_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(ks_zookeeper_pwd=genRandomPassword())
 
-    def on_update_status(self, event):
-        if not service_running(self.service):
-            self.model.unit.status = \
-                BlockedStatus("{} not running".format(self.service))
+    def on_upload_keytab_action(self, event):
+        try:
+            self._upload_keytab_base64(
+                event.params["keytab"], filename="zookeeper.keytab")
+        except Exception as e:
+            # Capture any exceptions and return them via action
+            event.fail("Failed with: {}".format(str(e)))
             return
-        self.model.unit.status = \
-            ActiveStatus("{} is running".format(self.service))
+        self._on_config_changed(event)
+        event.set_results({"keytab": "Uploaded!"})
 
     def on_certificates_relation_joined(self, event):
         self.certificates.on_tls_certificate_relation_joined(event)
@@ -248,23 +256,19 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         return k
 
     def get_ssl_keystore(self):
-        path = self.config.get("keystore-path",
-                               "/var/ssl/private/kafka_ssl_ks.jks")
+        path = self.config.get("keystore-path", "")
         return path
 
     def get_ssl_truststore(self):
-        path = self.config.get("truststore-path",
-                               "/var/ssl/private/kafka_ssl_ks.jks")
+        path = self.config.get("truststore-path", "")
         return path
 
     def get_quorum_keystore(self):
-        path = self.config.get("quorum-keystore-path",
-                               "/var/ssl/private/kafka_quorum_ks.jks")
+        path = self.config.get("quorum-keystore-path", "")
         return path
 
     def get_quorum_truststore(self):
-        path = self.config.get("quorum-truststore-path",
-                               "/var/ssl/private,kafka_quorum_ts.jks")
+        path = self.config.get("quorum-truststore-path", "")
         return path
 
     def _generate_keystores(self):
@@ -454,6 +458,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             # Used for client-server communication
             zk_props["ssl.clientAuth"] = "need" \
                 if self.config.get("sslClientAuth", False) else "none"
+            if self.config["sslClientAuth"]:
+                zk_props["authProvider.x509"] = \
+                    "org.apache.zookeeper.server.auth." + \
+                    "X509AuthenticationProvider"
             zk_props["ssl.keyStore.location"] = \
                 self.config.get(
                     "keystore-path",
@@ -490,6 +498,13 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         else:
             zk_props["ssl.clientAuth"] = "none"
             zk_props["clientPort"] = self.config.get("clientPort", 2182)
+
+        # KERBEROS
+        if self.is_sasl_kerberos_enabled():
+            zk_props["authProvider.sasl"] = \
+                "org.apache.zookeeper.server.auth.SASLAuthenticationProvider"
+            zk_props["kerberos.removeHostFromPrincipal"] = "true"
+            zk_props["kerberos.removeRealmFromPrincipal"] = "true"
 
         # CLUSTER TASKS:
         # First, ensure cluster-count is set:
@@ -577,6 +592,21 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         return self.service
 
     def _on_config_changed(self, event):
+        super()._on_config_changed(event)
+        try:
+            if self.is_sasl_kerberos_enabled() and not self.keytab:
+                self.model.unit.status = \
+                    BlockedStatus("Kerberos set, waiting for keytab "
+                                  "upload action")
+                # We can drop this event given that an action will happen
+                # or a config change
+                return
+        except KafkaCharmBaseMissingConfigError as e:
+            # This error is raised if some but not all the configs needed for
+            # Kerberos were enabled
+            self.model.unit.status = \
+                BlockedStatus("Kerberos config missing: {}".format(str(e)))
+            return
         if not self._cert_relation_set(event):
             return
         self.model.unit.status = \

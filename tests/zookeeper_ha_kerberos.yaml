@@ -4,11 +4,11 @@ variables:
   distro:   &distro   "confluent"
 machines:
   "0":
-    constraints: cores=2 mem=4G root-disk=20G
+    constraints: cores=2 mem=4G root-disk=20G tags=zookeeper
   "1":
-    constraints: cores=2 mem=4G root-disk=20G
+    constraints: cores=2 mem=4G root-disk=20G tags=zookeeper
   "2":
-    constraints: cores=2 mem=4G root-disk=20G
+    constraints: cores=2 mem=4G root-disk=20G tags=zookeeper
 applications:
   easyrsa:
     charm: cs:~containers/easyrsa
@@ -19,6 +19,12 @@ applications:
     charm: ../zookeeper.charm
     num_units: 3
     options:
+      sasl-protocol: kerberos
+      kerberos-kdc-hostname: freeipa.example.com
+      kerberos-admin-hostname: freeipa.example.com
+      kerberos-domain: example.com
+      kerberos-realm: EXAMPLE.COM
+      kerberos-protocol: HTTP
       version: *version
       distro: *distro
       user: test
@@ -26,10 +32,10 @@ applications:
       quorum-keystore-path: /var/ssl/private/quorum-ks.jks
       quorum-truststore-path: /var/ssl/private/quorum-ts.jks
       keystore-path: /var/ssl/private/ssl-ks.jks
-      # Only charms related to this ZK will be able to connect
       truststore-path: /var/ssl/private/ssl-ts.jks
       generate-root-ca: false
-      ssl_quorum: true
+      sslQuorum: false
+      log4j-root-logger: "DEBUG, stdout, zkAppender"
     to:
     - 0
     - 1
