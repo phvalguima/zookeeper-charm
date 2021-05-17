@@ -40,6 +40,8 @@ from wand.apps.relations.kafka_relation_base import (
     KafkaRelationBaseTLSNotSetError
 )
 
+from charmhelpers.coordinator import Serial
+
 from wand.security.ssl import PKCS12CreateKeystore
 from wand.security.ssl import genRandomPassword
 from wand.security.ssl import generateSelfSigned
@@ -592,7 +594,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         return self.service
 
     def _on_config_changed(self, event):
-        super()._on_config_changed(event)
         try:
             if self.is_sasl_kerberos_enabled() and not self.keytab:
                 self.model.unit.status = \
@@ -607,8 +608,16 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.model.unit.status = \
                 BlockedStatus("Kerberos config missing: {}".format(str(e)))
             return
+
         if not self._cert_relation_set(event):
             return
+        # handle method must be called before any of the hooks
+        # Running here ensures the handle() is always ran before the relevant
+        # part for the lock management
+        Serial().handle()
+        # Kerberos if needed correctly configured and certs are set:
+        super()._on_config_changed(event)
+
         self.model.unit.status = \
             MaintenanceStatus("generate certs and keys if needed")
         logger.debug("Running _generate_keystores()")
@@ -626,14 +635,23 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.render_service_override_file(
             target="/etc/systemd/system/"
                    "{}.service.d/override.conf".format(self.service))
+        # Check if we need to enable SASL:
+        if self.is_sasl_kerberos_enabled():
+            self.zk.enable_sasl_kerberos()
+        else:
+            self.zk.disable_sasl_kerberos()
+        # Now, restart service
         if self._check_if_ready_to_start():
-            logger.info("Service ready or start, restarting it...")
-            # Unmask and enable service
-            service_resume(self.service)
-            # Reload and restart
-            service_reload(self.service)
-            service_restart(self.service)
-            logger.debug("finished restarting")
+            # Needed to be done on every config-changed
+            Serial().acquire('restart')
+            if Serial().granted('restart'):
+                logger.info("Service ready or start, restarting it...")
+                # Unmask and enable service
+                service_resume(self.service)
+                # Reload and restart
+                service_reload(self.service)
+                service_restart(self.service)
+                logger.debug("finished restarting")
         if not service_running(self.service):
             logger.warning("Service not running that "
                            "should be: {}".format(self.service))
