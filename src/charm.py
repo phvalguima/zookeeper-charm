@@ -6,6 +6,8 @@ import base64
 import logging
 import socket
 import yaml
+import copy
+import json
 
 from ops.main import main
 from ops.model import (
@@ -13,6 +15,12 @@ from ops.model import (
     ActiveStatus,
     MaintenanceStatus
 )
+from ops.framework import (
+    EventBase,
+    StoredState,
+    EventSource
+)
+from ops.charm import CharmEvents
 
 from charmhelpers.core.templating import render
 from charmhelpers.core.host import (
@@ -49,8 +57,45 @@ from wand.security.ssl import generateSelfSigned
 logger = logging.getLogger(__name__)
 
 
+class RestartEvent(EventBase):
+
+    state = StoredState()
+
+    def __init__(self, handle, ctx, services=[]):
+        super().__init__(handle)
+        self._ctx = copy.deepcopy(ctx)
+        self._svc = copy.deepcopy(services)
+
+    def snapshot(self):
+        super().snapshot()
+        return {
+            "ctx": json.dumps(self._ctx),
+            "svc": ",".join(self._svc)
+        }
+
+    def restore(self, snapshot):
+        super().restore(snapshot)
+        self._ctx = json.loads(snapshot["ctx"])
+        self._svc = snapshot["svc"].split(",")
+
+    @property
+    def ctx(self):
+        return self._ctx
+
+    @property
+    def svc(self):
+        return self._svc
+
+
+class RestartCharmEvent(CharmEvents):
+    """Restart charm events."""
+
+    restart_event = EventSource(RestartEvent)
+
+
 class ZookeeperCharm(KafkaJavaCharmBase):
     """Charm the service."""
+    on = RestartCharmEvent()
 
     CONFLUENT_PACKAGES = [
         "confluent-common",
@@ -83,6 +128,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                self.on_update_status)
         self.framework.observe(self.on.upload_keytab_action,
                                self.on_upload_keytab_action)
+        self.framework.observe(self.on.restart_event,
+                               self._on_restart_event)
         self.zk = ZookeeperProvidesRelation(self, 'zookeeper',
                                             port=self.config.get('clientPort',
                                                                  2182))
@@ -100,6 +147,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(ssl_key="")
         self.ks.set_default(ts_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(ks_zookeeper_pwd=genRandomPassword())
+        self.ks.set_default(config_state="{}")
 
     def on_upload_keytab_action(self, event):
         try:
@@ -431,13 +479,18 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.model.unit.status = BlockedStatus(str(e))
         self._on_config_changed(event)
 
-    def _check_if_ready_to_start(self):
+    def _check_if_ready_to_start(self, ctx):
         if not self.cluster.is_ready:
             self.model.unit.status = \
                 BlockedStatus("Waiting for other cluster units")
             return False
-        self.model.unit.status = \
-            ActiveStatus("{} running".format(self.service))
+        # ctx can be a string or dict, then check and convert accordingly
+        c = json.dumps(ctx) if isinstance(ctx, dict) else ctx
+        if c == self.ks.config_state:
+            logger.debug("Current state: {}, saved state: {}".format(
+                c, self.ks.config_state
+            ))
+            return False
         return True
 
     def _render_zk_properties(self):
@@ -593,6 +646,48 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.service = "zookeeper"
         return self.service
 
+    def _on_restart_event(self, event):
+        # handle method must be called before any of the hooks
+        # Running here ensures the handle() is always ran before the relevant
+        # part for the lock management
+        serial = Serial()
+        serial.initialize()
+        serial.handle()
+        if self.unit.is_leader():
+            logger.debug("Grants: {}, Requests: {}".format(serial.grants, serial.requests))
+        if serial.acquire('restart'):
+            logger.info("Service ready or start, restarting it...")
+            logger.debug("Service list to be restarted {}".format(event.svc))
+            for ev in event.svc:
+                # Unmask and enable service
+                service_resume(ev)
+                # Reload and restart
+                service_reload(ev)
+                service_restart(ev)
+            logger.debug("finished restarting")
+            # Now that restart is done, update the config state
+            # TODO: Update this state with an internal value for OpsCoordinator once it is done
+            self.ks.config_state = json.dumps(event.ctx)
+        else:
+            logger.info("Lock not available, try to acquire it")
+            self.model.unit.status = \
+                BlockedStatus("Waiting for restart lock to be granted")
+            # We need to wait until the lock is available, therefore we defer
+            # this event until that happens.
+            # Normally we return after defer, but in this case, we must ensure
+            # lock-related data is stored.
+            event.defer()
+        # According to the charm-helpers, those are the two methods called at
+        # hookenv.atexit().
+        # TODO: The correct way to deal with this is to have an OpsCoordinator
+        # and to emit an event to that coordinator so it can process and run
+        # save_state and release_granted
+        serial._release_granted()
+        serial._save_state()
+        if service_running(self.service):
+            self.model.unit.status = \
+                ActiveStatus("{} running".format(self.service))
+
     def _on_config_changed(self, event):
         try:
             if self.is_sasl_kerberos_enabled() and not self.keytab:
@@ -614,9 +709,13 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         # handle method must be called before any of the hooks
         # Running here ensures the handle() is always ran before the relevant
         # part for the lock management
-        Serial().handle()
+#        serial = Serial()
+#        serial.initialize()
+#        serial.handle()
+#        if self.unit.is_leader():
+#            logger.info("Grants: {}, Requests: {}".format(serial.grants, serial.requests))
         # Kerberos if needed correctly configured and certs are set:
-        super()._on_config_changed(event)
+        jaas_opts = super()._on_config_changed(event)
 
         self.model.unit.status = \
             MaintenanceStatus("generate certs and keys if needed")
@@ -625,14 +724,15 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.model.unit.status = \
             MaintenanceStatus("Render zookeeper.properties")
         logger.debug("Running render_zk_properties()")
-        self._render_zk_properties()
+        
+        zk_opts = self._render_zk_properties()
         self.model.unit.status = MaintenanceStatus("Render log4j properties")
         logger.debug("Running log4j properties renderer")
-        self._render_zk_log4j_properties()
+        log4j_opts = self._render_zk_log4j_properties()
         self.model.unit.status = \
             MaintenanceStatus("Render service override conf file")
         logger.debug("Render override.conf")
-        self.render_service_override_file(
+        svc_opts = self.render_service_override_file(
             target="/etc/systemd/system/"
                    "{}.service.d/override.conf".format(self.service))
         # Check if we need to enable SASL:
@@ -641,21 +741,57 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         else:
             self.zk.disable_sasl_kerberos()
         # Now, restart service
-        if self._check_if_ready_to_start():
-            # Needed to be done on every config-changed
-            Serial().acquire('restart')
-            if Serial().granted('restart'):
-                logger.info("Service ready or start, restarting it...")
-                # Unmask and enable service
-                service_resume(self.service)
-                # Reload and restart
-                service_reload(self.service)
-                service_restart(self.service)
-                logger.debug("finished restarting")
-        if not service_running(self.service):
-            logger.warning("Service not running that "
-                           "should be: {}".format(self.service))
-            BlockedStatus("Service not running {}".format(self.service))
+        self.model.unit.status = \
+            MaintenanceStatus("Building context...")
+        ctx = {
+            "jaas_opts": jaas_opts,
+            "zk_opts": zk_opts,
+            "log4j_opts": log4j_opts,
+            "svc_opts": svc_opts
+        }
+        logger.debug("Context: {}, saved state is: {}".format(
+            ctx, self.ks.config_state
+        ))
+        if self._check_if_ready_to_start(ctx):
+            self.on.restart_event.emit(ctx, services=[self.service])
+            self.model.unit.status = \
+                        BlockedStatus("Waiting for restart event")
+        elif service_running(self.service):
+            self.model.unit.status = \
+                        ActiveStatus("Service is running")
+        else:
+            self.model.unit.status = \
+                BlockedStatus("Service not running that "
+                              "should be: {}".format(self.service))
+#        if self._check_if_ready_to_start({
+#            "jaas_opts": jaas_opts,
+#            "zk_opts": zk_opts,
+#            "log4j_opts": log4j_opts,
+#            "svc_opts": svc_opts
+#        }):
+#            if serial.granted('restart'):
+#                logger.info("Service ready or start, restarting it...")
+#                # Unmask and enable service
+#                service_resume(self.service)
+#                # Reload and restart
+#                service_reload(self.service)
+#                service_restart(self.service)
+#                logger.debug("finished restarting")
+#            else:
+#                logger.info("Lock not available, try to acquire it")
+#                serial.acquire('restart')
+#                self.model.unit.status = \
+#                    BlockedStatus("Waiting for restart lock to be released")
+#        if not service_running(self.service):
+#            logger.warning("Service not running that "
+#                           "should be: {}".format(self.service))
+        # According to the charm-helpers, those are the two methods called at
+        # hookenv.atexit().
+        # TODO: The correct way to deal with this is to have an OpsCoordinator
+        # and to emit an event to that coordinator so it can process and run
+        # save_state and release_granted
+#        serial._release_granted()
+#        serial._save_state()
 
 
 if __name__ == "__main__":
