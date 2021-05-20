@@ -6,7 +6,6 @@ import base64
 import logging
 import socket
 import yaml
-import copy
 import json
 
 from ops.main import main
@@ -15,19 +14,10 @@ from ops.model import (
     ActiveStatus,
     MaintenanceStatus
 )
-from ops.framework import (
-    EventBase,
-    StoredState,
-    EventSource
-)
-from ops.charm import CharmEvents
 
 from charmhelpers.core.templating import render
 from charmhelpers.core.host import (
-    service_resume,
-    service_running,
-    service_restart,
-    service_reload
+    service_running
 )
 
 from wand.apps.relations.tls_certificates import (
@@ -47,50 +37,16 @@ from wand.apps.relations.kafka_relation_base import (
     KafkaRelationBaseNotUsedError,
     KafkaRelationBaseTLSNotSetError
 )
-
-from charmhelpers.coordinator import Serial
+from wand.contrib.coordinator import (
+    RestartCharmEvent,
+    OpsCoordinator
+)
 
 from wand.security.ssl import PKCS12CreateKeystore
 from wand.security.ssl import genRandomPassword
 from wand.security.ssl import generateSelfSigned
 
 logger = logging.getLogger(__name__)
-
-
-class RestartEvent(EventBase):
-
-    state = StoredState()
-
-    def __init__(self, handle, ctx, services=[]):
-        super().__init__(handle)
-        self._ctx = copy.deepcopy(ctx)
-        self._svc = copy.deepcopy(services)
-
-    def snapshot(self):
-        super().snapshot()
-        return {
-            "ctx": json.dumps(self._ctx),
-            "svc": ",".join(self._svc)
-        }
-
-    def restore(self, snapshot):
-        super().restore(snapshot)
-        self._ctx = json.loads(snapshot["ctx"])
-        self._svc = snapshot["svc"].split(",")
-
-    @property
-    def ctx(self):
-        return self._ctx
-
-    @property
-    def svc(self):
-        return self._svc
-
-
-class RestartCharmEvent(CharmEvents):
-    """Restart charm events."""
-
-    restart_event = EventSource(RestartEvent)
 
 
 class ZookeeperCharm(KafkaJavaCharmBase):
@@ -129,7 +85,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.framework.observe(self.on.upload_keytab_action,
                                self.on_upload_keytab_action)
         self.framework.observe(self.on.restart_event,
-                               self._on_restart_event)
+                               self.on_restart_event)
         self.zk = ZookeeperProvidesRelation(self, 'zookeeper',
                                             port=self.config.get('clientPort',
                                                                  2182))
@@ -148,6 +104,18 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(ts_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(ks_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(config_state="{}")
+
+    def on_update_status(self, event):
+        # Check if the locks must be handled or not
+        coordinator = OpsCoordinator()
+        coordinator.handle_locks(self.unit)
+        super().on_update_status(event)
+
+    def on_restart_event(self, event):
+        if event.restart():
+            self.ks.config_state = event.ctx
+        else:
+            event.defer()
 
     def on_upload_keytab_action(self, event):
         try:
@@ -603,7 +571,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 mode=0o640)
             zk_props["ssl.quorum.keyStore.location"] = \
                 self.get_quorum_keystore()
-            zk_props["ssl.quorum.keyStore.password"] = self.ks.ks_zookeeper_pwd
+            zk_props["ssl.quorum.keyStore.password"] = \
+                self.ks.ks_zookeeper_pwd
             zk_props["ssl.quorum.trustStore.location"] = \
                 self.get_quorum_truststore()
             zk_props["ssl.quorum.trustStore.password"] = \
@@ -646,48 +615,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.service = "zookeeper"
         return self.service
 
-    def _on_restart_event(self, event):
-        # handle method must be called before any of the hooks
-        # Running here ensures the handle() is always ran before the relevant
-        # part for the lock management
-        serial = Serial()
-        serial.initialize()
-        serial.handle()
-        if self.unit.is_leader():
-            logger.debug("Grants: {}, Requests: {}".format(serial.grants, serial.requests))
-        if serial.acquire('restart'):
-            logger.info("Service ready or start, restarting it...")
-            logger.debug("Service list to be restarted {}".format(event.svc))
-            for ev in event.svc:
-                # Unmask and enable service
-                service_resume(ev)
-                # Reload and restart
-                service_reload(ev)
-                service_restart(ev)
-            logger.debug("finished restarting")
-            # Now that restart is done, update the config state
-            # TODO: Update this state with an internal value for OpsCoordinator once it is done
-            self.ks.config_state = json.dumps(event.ctx)
-        else:
-            logger.info("Lock not available, try to acquire it")
-            self.model.unit.status = \
-                BlockedStatus("Waiting for restart lock to be granted")
-            # We need to wait until the lock is available, therefore we defer
-            # this event until that happens.
-            # Normally we return after defer, but in this case, we must ensure
-            # lock-related data is stored.
-            event.defer()
-        # According to the charm-helpers, those are the two methods called at
-        # hookenv.atexit().
-        # TODO: The correct way to deal with this is to have an OpsCoordinator
-        # and to emit an event to that coordinator so it can process and run
-        # save_state and release_granted
-        serial._release_granted()
-        serial._save_state()
-        if service_running(self.service):
-            self.model.unit.status = \
-                ActiveStatus("{} running".format(self.service))
-
     def _on_config_changed(self, event):
         try:
             if self.is_sasl_kerberos_enabled() and not self.keytab:
@@ -706,14 +633,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
 
         if not self._cert_relation_set(event):
             return
-        # handle method must be called before any of the hooks
-        # Running here ensures the handle() is always ran before the relevant
-        # part for the lock management
-#        serial = Serial()
-#        serial.initialize()
-#        serial.handle()
-#        if self.unit.is_leader():
-#            logger.info("Grants: {}, Requests: {}".format(serial.grants, serial.requests))
         # Kerberos if needed correctly configured and certs are set:
         jaas_opts = super()._on_config_changed(event)
 
@@ -723,8 +642,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._generate_keystores()
         self.model.unit.status = \
             MaintenanceStatus("Render zookeeper.properties")
+
         logger.debug("Running render_zk_properties()")
-        
         zk_opts = self._render_zk_properties()
         self.model.unit.status = MaintenanceStatus("Render log4j properties")
         logger.debug("Running log4j properties renderer")
@@ -747,7 +666,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             "jaas_opts": jaas_opts,
             "zk_opts": zk_opts,
             "log4j_opts": log4j_opts,
-            "svc_opts": svc_opts
+            "svc_opts": svc_opts,
+            "keytab_opts": self.keytab_b64
         }
         logger.debug("Context: {}, saved state is: {}".format(
             ctx, self.ks.config_state
@@ -755,7 +675,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         if self._check_if_ready_to_start(ctx):
             self.on.restart_event.emit(ctx, services=[self.service])
             self.model.unit.status = \
-                        BlockedStatus("Waiting for restart event")
+                BlockedStatus("Waiting for restart event")
+            # Finished all the tasks for the config changed.
+            # Return here.
+            return
         elif service_running(self.service):
             self.model.unit.status = \
                         ActiveStatus("Service is running")
@@ -763,35 +686,14 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.model.unit.status = \
                 BlockedStatus("Service not running that "
                               "should be: {}".format(self.service))
-#        if self._check_if_ready_to_start({
-#            "jaas_opts": jaas_opts,
-#            "zk_opts": zk_opts,
-#            "log4j_opts": log4j_opts,
-#            "svc_opts": svc_opts
-#        }):
-#            if serial.granted('restart'):
-#                logger.info("Service ready or start, restarting it...")
-#                # Unmask and enable service
-#                service_resume(self.service)
-#                # Reload and restart
-#                service_reload(self.service)
-#                service_restart(self.service)
-#                logger.debug("finished restarting")
-#            else:
-#                logger.info("Lock not available, try to acquire it")
-#                serial.acquire('restart')
-#                self.model.unit.status = \
-#                    BlockedStatus("Waiting for restart lock to be released")
-#        if not service_running(self.service):
-#            logger.warning("Service not running that "
-#                           "should be: {}".format(self.service))
-        # According to the charm-helpers, those are the two methods called at
-        # hookenv.atexit().
-        # TODO: The correct way to deal with this is to have an OpsCoordinator
-        # and to emit an event to that coordinator so it can process and run
-        # save_state and release_granted
-#        serial._release_granted()
-#        serial._save_state()
+        # Now, we need to always handle the locks, even if acquire() was not
+        # called since _check_if_ready_to_start returned False.
+        # Therefore, we need to manually handle those locks.
+        # If _check_if_ready_to_start returns True, then the locks will be
+        # managed at the restart event and config-changed is closed with a
+        # return.
+        coordinator = OpsCoordinator()
+        coordinator.handle_locks(self.unit)
 
 
 if __name__ == "__main__":
