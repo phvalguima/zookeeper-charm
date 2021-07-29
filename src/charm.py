@@ -27,7 +27,9 @@ from wand.apps.relations.tls_certificates import (
 )
 from wand.apps.kafka import (
     KafkaJavaCharmBase,
-    KafkaCharmBaseMissingConfigError
+    KafkaCharmBaseMissingConfigError,
+    KafkaJavaCharmBaseNRPEMonitoring,
+    KafkaJavaCharmBasePrometheusMonitorNode
 )
 from cluster import ZookeeperCluster
 from wand.apps.relations.zookeeper import (
@@ -104,6 +106,32 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(ts_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(ks_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(config_state="{}")
+        # LMA integrations
+        self.prometheus = \
+            KafkaJavaCharmBasePrometheusMonitorNode(
+                self, 'prometheus-manual',
+                port=self.config.get("jmx-exporter-port", 9404),
+                internal_endpoint=self.config.get(
+                    "jmx_exporter_use_internal", False),
+                labels=self.config.get("jmx_exporter_labels", None))
+        self.framework.observe(
+            self.on.prometheus_manual_relation_joined,
+            self.prometheus.on_prometheus_relation_joined)
+        self.framework.observe(
+            self.on.prometheus_manual_relation_changed,
+            self.prometheus.on_prometheus_relation_changed)
+        self.nrpe = KafkaJavaCharmBaseNRPEMonitoring(
+            self,
+            svcs=["kafka"],
+            endpoints=["127.0.0.1:9000"],
+            nrpe_relation_name='nrpe-external-master')
+        self.framework.observe(self.nrpe.on.nrpe_available,
+                               self.nrpe.on_nrpe_available)
+
+    def is_jmxexporter_enabled(self):
+        if self.prometheus.relations:
+            return True
+        return False
 
     def on_update_status(self, event):
         # Check if the locks must be handled or not

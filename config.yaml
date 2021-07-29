@@ -260,4 +260,30 @@ options:
     default: 8079
     description: |
       Path to expose prometheus metrics for scraping.      
-    
+  jmx_exporter_version: 
+    default: "v0.12.0"
+    type: string
+    description: |
+      Value set for the version of the JMX Exporter.
+  jmx_exporter_url:
+    default: "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/{}/jmx_prometheus_javaagent-{}.jar"
+    type: string
+    description: |
+      Maven's URL from where JMX jar can be downloaded.
+      Replace the version value with "{}" for the versions.
+  jmx-exporter-port: 
+    default: 9404
+    type: int
+    description: |
+      Port to be exposed by the exporter for prometheus.
+  jmx_exporter_labels: 
+    default: ""
+    type: string
+    description: |
+      Comma-separated list of key=value tags.
+  jmx_exporter_use_internal: 
+    default: false
+    type: boolean
+    description: |
+      Use the internal or advertised address in the prometheus relation.
+      If False, the advertised address will be used.   

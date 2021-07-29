@@ -14,6 +14,10 @@ peers:
 provides:
   zookeeper:
     interface: zookeeper
+  prometheus-manual:
+    interface: prometheus-manual
+  nrpe-external-master:
+    interface: nrpe-external-master
 requires:
   certificates:
     interface: tls-certificates
