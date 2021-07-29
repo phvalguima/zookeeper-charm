@@ -122,11 +122,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.prometheus.on_prometheus_relation_changed)
         self.nrpe = KafkaJavaCharmBaseNRPEMonitoring(
             self,
-            svcs=["kafka"],
-            endpoints=["127.0.0.1:9000"],
+            svcs=[self._get_service_name()],
+            endpoints=[],
             nrpe_relation_name='nrpe-external-master')
-        self.framework.observe(self.nrpe.on.nrpe_available,
-                               self.nrpe.on_nrpe_available)
 
     def is_jmxexporter_enabled(self):
         if self.prometheus.relations:

@@ -19,6 +19,11 @@ from unit_tests.config_files import ZK_PROPERTIES_WITH_SSL
 from wand.contrib.linux import getCurrentUserAndGroup
 import wand.apps.relations.zookeeper as zkRelation
 import wand.apps.kafka as kafka
+from nrpe.client import NRPEClient
+
+from wand.apps.relations.tls_certificates import (
+    TLSCertificateRequiresRelation,
+)
 
 TO_PATCH_LINUX = [
     'userAdd',
@@ -32,10 +37,7 @@ TO_PATCH_FETCH = [
 ]
 
 TO_PATCH_HOST = [
-    'service_resume',
-    'service_running',
-    'service_restart',
-    'service_reload'
+    'service_running'
 ]
 
 
@@ -106,6 +108,66 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch.object(charm.ZookeeperCharm, '_cert_relation_set')
+    @patch.object(kafka, "open_port")
+    @patch.object(NRPEClient, "add_check")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'scrape_request', new_callable=PropertyMock)
+    @patch.object(charm, "genRandomPassword")
+    # Those two patches set _cert_relation_set + get_ssl* as empty
+    @patch.object(TLSCertificateRequiresRelation, "get_server_certs")
+    @patch.object(TLSCertificateRequiresRelation, "request_server_cert")
+    @patch.object(charm, "PKCS12CreateKeystore")
+    @patch.object(kafka.KafkaJavaCharmBase, "_on_install")
+    @patch.object(charm.ZookeeperCharm, "create_data_and_log_dirs")
+    @patch.object(kafka.KafkaJavaCharmBase, "install_packages")
+    @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
+    @patch.object(charm, "render")
+    def test_config_changed(self,
+                            mock_render,
+                            mock_folders_perms,
+                            mock_on_install_pkgs,
+                            mock_create_dirs,
+                            mock_super_install,
+                            mock_create_jks,
+                            mock_request_server_cert,
+                            mock_get_server_certs,
+                            mock_gen_random_pwd,
+                            mock_prometheus_scrape_req,
+                            mock_prometheus_advertise_addr,
+                            mock_nrpe_add_check,
+                            mock_open_port,
+                            mock_cert_relation_set):
+        mock_cert_relation_set.return_value = True
+        mock_gen_random_pwd.return_value = "aaabbb"
+        harness = Harness(charm.ZookeeperCharm)
+        self.addCleanup(harness.cleanup)
+        harness.begin()
+        harness.update_config({
+            "version": "6.1",
+            "distro": "confluent",
+            "user": "test",
+            "group": "test",
+            "quorum-keystore-path": "/var/ssl/private/quorum-ks.jks",
+            "quorum-truststore-path": "/var/ssl/private/quorum-ts.jks",
+            "truststore-path": "/var/ssl/private/ssl-ts.jks",
+            "keystore-path": "/var/ssl/private/ssl-ks.jks",
+            "sslQuorum": False,
+            "generate-root-ca": False,
+            "log4j-root-logger": "DEBUG, stdout, zkAppender",
+            "cluster-count": 3
+        })
+        harness.add_relation('cluster', 'zookeeper')
+#        harness.add_
+
+    @patch.object(kafka, "open_port")
+    @patch.object(NRPEClient, "add_check")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'scrape_request', new_callable=PropertyMock)
     @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
     @patch.object(cluster.ZookeeperCluster, "relations",
                   new_callable=PropertyMock)
@@ -117,7 +179,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(cluster.ZookeeperCluster, "relation",
                   new_callable=PropertyMock)
     @patch.object(charm.ZookeeperCharm,
-                  'is_client_ssl_enabled')
+                  'is_ssl_enabled')
     @patch.object(charm, "render")
     def test_confluent_simple_render_zk_props(self, mock_render,
                                               mock_is_client_ssl,
@@ -127,7 +189,11 @@ class TestCharm(unittest.TestCase):
                                               mock_get_binding,
                                               mock_svc_override,
                                               mock_cluster_relations,
-                                              mock_folders_perms):
+                                              mock_folders_perms,
+                                              mock_prometheus_scrape_req,
+                                              mock_prometheus_advertise_addr,
+                                              mock_nrpe_add_check,
+                                              mock_open_port):
 
         mock_hostname.return_value = "ansiblezookeeper2.example.com"
         mock_cluster_relation.return_value = MockRelations(data={
@@ -159,6 +225,12 @@ class TestCharm(unittest.TestCase):
                              ctx=mock_render.call_args.kwargs["context"],
                              templ_file='zookeeper.properties.j2'))
 
+    @patch.object(kafka, "open_port")
+    @patch.object(NRPEClient, "add_check")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'scrape_request', new_callable=PropertyMock)
     @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
     @patch.object(cluster.ZookeeperCluster, "relations",
                   new_callable=PropertyMock)
@@ -180,7 +252,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(host, 'service_running')
     @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
     @patch.object(charm.ZookeeperCharm, '_render_zk_log4j_properties')
-    @patch.object(charm.ZookeeperCharm, 'is_client_ssl_enabled')
+    @patch.object(charm.ZookeeperCharm, 'is_ssl_enabled')
     @patch.object(charm, "render")
     def test_confluent_ssl_render_zk_props(self,
                                            mock_render,
@@ -201,7 +273,11 @@ class TestCharm(unittest.TestCase):
                                            mock_get_binding,
                                            mock_svc_override,
                                            mock_cluster_relations,
-                                           mock_folders_perms):
+                                           mock_folders_perms,
+                                           mock_prometheus_scrape_req,
+                                           mock_prometheus_advertise_addr,
+                                           mock_nrpe_add_check,
+                                           mock_open_port):
 
         def __cleanup():
             for i in ["/tmp/ks-charm.p12", "/tmp/ks-charm*",

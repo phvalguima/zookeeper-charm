@@ -10,6 +10,9 @@ import cluster as cluster
 import wand.security.ssl as security
 from wand.security.ssl import genRandomPassword
 
+import wand.apps.kafka as kafka
+from nrpe.client import NRPEClient
+
 
 class MockRelation(object):
     def __init__(self, data):
@@ -40,6 +43,12 @@ class TestCluster(unittest.TestCase):
     def setUp(self):
         super(TestCluster, self).setUp()
 
+    @patch.object(kafka, "open_port")
+    @patch.object(NRPEClient, "add_check")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'scrape_request', new_callable=PropertyMock)
     @patch.object(cluster.ZookeeperCluster, "relations",
                   new_callable=PropertyMock)
     @patch.object(security, "setFilePermissions")
@@ -51,7 +60,11 @@ class TestCluster(unittest.TestCase):
                                mock_relation,
                                mock_unit,
                                mock_perms,
-                               mock_relations):
+                               mock_relations,
+                               mock_prometheus_scrape_req,
+                               mock_prometheus_advertise_addr,
+                               mock_nrpe_add_check,
+                               mock_open_port):
         def __cleanup():
             for i in ["/tmp/testcert*", "/tmp/test-ts-quorum.jks"]:
                 try:
