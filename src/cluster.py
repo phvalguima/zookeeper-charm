@@ -97,6 +97,8 @@ class ZookeeperCluster(KafkaRelationBase):
         super()._get_all_tls_cert()
 
     def on_cluster_relation_changed(self, event):
+        # Expect this method to return empty if no cert is needed
+        # as is_TLS_enabled()
         self._get_all_tls_certs()
 
         if self._get_myid <= 0:

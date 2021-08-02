@@ -3,27 +3,28 @@
 
 import os
 import unittest
-from mock import patch
+from mock import patch, mock_open
 from mock import PropertyMock
 
 from ops.testing import Harness
-import ops.model as model
 import charm as charm
 import cluster as cluster
-import charmhelpers.core.host as host
 import charmhelpers.fetch.ubuntu as ubuntu
 
-from unit_tests.config_files import ZK_PROPERTIES
-from unit_tests.config_files import ZK_PROPERTIES_WITH_SSL
-
-from wand.contrib.linux import getCurrentUserAndGroup
 import wand.apps.relations.zookeeper as zkRelation
 import wand.apps.kafka as kafka
+import wand.contrib.java as java
 from nrpe.client import NRPEClient
+
+import charmhelpers.contrib.network.ip as ch_ip
+
+import wand.apps.relations.kafka_relation_base as kafka_relation_base
 
 from wand.apps.relations.tls_certificates import (
     TLSCertificateRequiresRelation,
 )
+
+import wand.security.ssl as security
 
 TO_PATCH_LINUX = [
     'userAdd',
@@ -37,7 +38,8 @@ TO_PATCH_FETCH = [
 ]
 
 TO_PATCH_HOST = [
-    'service_running'
+    'service_running',
+    'service_restart'
 ]
 
 
@@ -108,6 +110,24 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch.object(cluster.ZookeeperCluster,
+                  'binding_addr', new_callable=PropertyMock)
+    @patch.object(cluster, 'get_hostname')
+    @patch.object(cluster, "setFilePermissions")
+    @patch('builtins.open',
+           new_callable=mock_open, read_data='')
+    @patch.object(kafka_relation_base, 'CreateTruststore')
+    @patch.object(charm, 'close_port')
+    @patch.object(charm, 'open_port')
+    @patch.object(charm.ZookeeperCharm, '_check_if_ready_to_start')
+    @patch.object(charm, 'service_resume')
+    @patch.object(charm, 'service_restart')
+    @patch.object(charm, 'service_running')
+    @patch.object(charm.ZookeeperCharm, 'get_quorum_key')
+    @patch.object(charm.ZookeeperCharm, 'get_quorum_cert')
+    @patch.object(charm.ZookeeperCharm, 'get_ssl_key')
+    @patch.object(charm.ZookeeperCharm, 'get_ssl_cert')
+    @patch.object(charm.ZookeeperCharm, '_generate_keystores')
     @patch.object(charm.ZookeeperCharm, '_cert_relation_set')
     @patch.object(kafka, "open_port")
     @patch.object(NRPEClient, "add_check")
@@ -115,6 +135,7 @@ class TestCharm(unittest.TestCase):
                   'advertise_addr', new_callable=PropertyMock)
     @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
                   'scrape_request', new_callable=PropertyMock)
+    @patch.object(java, "genRandomPassword")
     @patch.object(charm, "genRandomPassword")
     # Those two patches set _cert_relation_set + get_ssl* as empty
     @patch.object(TLSCertificateRequiresRelation, "get_server_certs")
@@ -124,9 +145,11 @@ class TestCharm(unittest.TestCase):
     @patch.object(charm.ZookeeperCharm, "create_data_and_log_dirs")
     @patch.object(kafka.KafkaJavaCharmBase, "install_packages")
     @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
+    @patch.object(kafka, "render")
     @patch.object(charm, "render")
-    def test_config_changed(self,
+    def test_config_no_cert(self,
                             mock_render,
+                            mock_kafka_class_render,
                             mock_folders_perms,
                             mock_on_install_pkgs,
                             mock_create_dirs,
@@ -135,16 +158,262 @@ class TestCharm(unittest.TestCase):
                             mock_request_server_cert,
                             mock_get_server_certs,
                             mock_gen_random_pwd,
+                            mock_java_gen_random_pwd,
                             mock_prometheus_scrape_req,
                             mock_prometheus_advertise_addr,
                             mock_nrpe_add_check,
+                            mock_kafka_open_port,
+                            mock_cert_relation_set,
+                            mock_generate_keystores,
+                            mock_get_ssl_cert,
+                            mock_get_ssl_key,
+                            mock_get_quorum_ssl_cert,
+                            mock_get_quorum_ssl_key,
+                            mock_service_running,
+                            mock_svc_restart,
+                            mock_svc_resume,
+                            mock_check_if_ready_restart,
                             mock_open_port,
-                            mock_cert_relation_set):
+                            mock_close_port,
+                            mock_create_ts,
+                            mock_open,
+                            mock_set_file_perms,
+                            mock_get_hostname,
+                            mock_cluster_binding_addr):
+        """
+        Test config changed
+
+        No certificate data: neither cert options nor relations.
+
+        Expected: render all the config files correctly.
+        """
+        # Avoid triggering the RestartEvent
+        mock_service_running.return_value = False
+        mock_check_if_ready_restart.return_value = False
+        mock_get_hostname.return_value = \
+            "ansiblezookeeper0.example.com"
+        # Remove the random password generation
+        mock_gen_random_pwd.return_value = "aaaa"
+        mock_java_gen_random_pwd.return_value = "aaaa"
+        # Prepare cleanup
+
+        def __cleanup():
+            for i in ["/tmp/testcert*", "/tmp/test-ts-quorum.jks"]:
+                try:
+                    os.remove(i)
+                except: # noqa
+                    pass
+
+        __cleanup()
+        certs = {}
+        crt, key = security.generateSelfSigned("/tmp", "testcert")
+        mock_get_ssl_cert.return_value = crt
+        mock_get_ssl_key.return_value = key
+        mock_get_quorum_ssl_cert.return_value = crt
+        mock_get_quorum_ssl_key.return_value = key
+        for i in range(1, 3):
+            certs[i] = {}
+            certs[i]["crt"] = crt
+            certs[i]["key"] = key
+        __cleanup()  # cleaning up the intermediate certs
+
+        # Mock-up values
         mock_cert_relation_set.return_value = True
-        mock_gen_random_pwd.return_value = "aaabbb"
+        # Prepare test
         harness = Harness(charm.ZookeeperCharm)
+        harness.update_config({
+            "version": "6.1",
+            "distro": "confluent",
+            "user": "test",
+            "group": "test",
+            "quorum-keystore-path": "",
+            "quorum-truststore-path": "",
+            "truststore-path": "",
+            "keystore-path": "",
+            "sslQuorum": False,
+            "generate-root-ca": False,
+            "log4j-root-logger": "DEBUG, stdout, zkAppender",
+            "cluster-count": 3
+        })
+        # Complete the cluster
+        cluster_id = harness.add_relation("cluster", "zookeeper")
+
+        harness.add_relation_unit(cluster_id, "zookeeper/1")
+        harness.update_relation_data(cluster_id, "zookeeper/1", {
+            "myid": 2,
+            "endpoint": "ansiblezookeeper1.example.com:2888:3888"
+        })
+        harness.add_relation_unit(cluster_id, "zookeeper/2")
+        harness.update_relation_data(cluster_id, "zookeeper/2", {
+            "myid": 3,
+            "endpoint": "ansiblezookeeper2.example.com:2888:3888"
+        })
+        harness.begin_with_initial_hooks()
         self.addCleanup(harness.cleanup)
-        harness.begin()
+        zk = harness.charm
+        # If cluster relation events (-joined, -changed) happens before
+        # certificate events, then cluster-* will be deferred.
+        # Run reemit to ensure they are run.
+        zk.framework.reemit()
+        # keystore is set, assert generate_keystores was called
+        mock_generate_keystores.assert_not_called()
+        # Assert log4j properties was correctly rendered
+        mock_render.assert_any_call(
+            source='zookeeper_log4j.properties.j2',
+            target='/etc/kafka/zookeeper-log4j.properties',
+            owner='test', group='test', perms=0o640,
+            context={'root_logger': 'DEBUG, stdout, zkAppender'}
+        )
+        # Assert the service override
+        mock_kafka_class_render.assert_any_call(
+            source='kafka_override.conf.j2',
+            target='/etc/systemd/system/confluent-zookeeper.service.d/'
+                   'override.conf',
+            owner='test', group='test', perms=0o644,
+            context={
+                'service_unit_overrides': {},
+                'service_overrides': {'User': 'test', 'Group': 'test'},
+                'service_environment_overrides': {
+                    'KAFKA_HEAP_OPTS': '-Xmx1g',
+                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:'
+                                        '/etc/kafka/zookeeper-log4j.'
+                                        'properties',
+                    'LOG_DIR': '/var/log/kafka',
+                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}}
+        )
+        # Assert the zk properties was correctly rendered
+        mock_render.assert_any_call(
+            source='zookeeper.properties.j2',
+            target='/etc/kafka/zookeeper.properties',
+            owner='test', group='test', perms=0o640,
+            context={
+                'zk_props': {
+                    'maxClientCnxns': 0,
+                    'initLimit': 5,
+                    'syncLimit': 2,
+                    'autopurge.snapRetainCount': 10,
+                    'autopurge.purgeInterval': 1,
+                    'admin.enableServer': False,
+                    'dataDir': '/var/lib/zookeeper',
+                    'dataLogDir': '/var/lib/kafka/zookeeper_log',
+                    'ssl.clientAuth': 'none', 'clientPort': 2182,
+                    'server.3': 'ansiblezookeeper2.example.com:2888:3888',
+                    'server.1': 'ansiblezookeeper0.example.com:2888:3888',
+                    'server.2': 'ansiblezookeeper1.example.com:2888:3888'}}
+            )
+
+    @patch.object(ch_ip, 'apt_install')
+    @patch.object(zkRelation.ZookeeperProvidesRelation, 'hostname',
+                  new_callable=PropertyMock)
+    @patch.object(zkRelation.ZookeeperProvidesRelation, 'advertise_addr',
+                  new_callable=PropertyMock)
+    @patch.object(cluster.ZookeeperCluster,
+                  'advertise_addr', new_callable=PropertyMock)
+    @patch.object(zkRelation.ZookeeperProvidesRelation, 'binding_addr',
+                  new_callable=PropertyMock)
+    @patch.object(cluster.ZookeeperCluster,
+                  'binding_addr', new_callable=PropertyMock)
+    @patch.object(cluster, 'get_hostname')
+    @patch.object(cluster, "setFilePermissions")
+    @patch('builtins.open',
+           new_callable=mock_open, read_data='')
+    @patch.object(kafka_relation_base, 'CreateTruststore')
+    @patch.object(charm, 'close_port')
+    @patch.object(charm, 'open_port')
+    @patch.object(charm.ZookeeperCharm, '_check_if_ready_to_start')
+    @patch.object(charm, 'service_resume')
+    @patch.object(charm, 'service_restart')
+    @patch.object(charm, 'service_running')
+    @patch.object(charm.ZookeeperCharm, '_generate_keystores')
+    @patch.object(kafka, "open_port")
+    @patch.object(NRPEClient, "add_check")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'scrape_request', new_callable=PropertyMock)
+    @patch.object(java, "genRandomPassword")
+    @patch.object(charm, "genRandomPassword")
+    @patch.object(charm, "PKCS12CreateKeystore")
+    @patch.object(kafka.KafkaJavaCharmBase, "_on_install")
+    @patch.object(charm.ZookeeperCharm, "create_data_and_log_dirs")
+    @patch.object(kafka.KafkaJavaCharmBase, "install_packages")
+    @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
+    @patch.object(kafka, "render")
+    @patch.object(charm, "render")
+    def test_config_rel_crt(self,
+                            mock_render,
+                            mock_kafka_class_render,
+                            mock_folders_perms,
+                            mock_on_install_pkgs,
+                            mock_create_dirs,
+                            mock_super_install,
+                            mock_create_jks,
+                            mock_gen_random_pwd,
+                            mock_java_gen_random_pwd,
+                            mock_prometheus_scrape_req,
+                            mock_prometheus_advertise_addr,
+                            mock_nrpe_add_check,
+                            mock_kafka_open_port,
+                            mock_generate_keystores,
+                            mock_service_running,
+                            mock_svc_restart,
+                            mock_svc_resume,
+                            mock_check_if_ready_restart,
+                            mock_open_port,
+                            mock_close_port,
+                            mock_create_ts,
+                            mock_open,
+                            mock_set_file_perms,
+                            mock_get_hostname,
+                            mock_cluster_binding_addr,
+                            mock_zk_binding_addr,
+                            mock_cluster_advertise_addr,
+                            mock_zk_advertise_addr,
+                            mock_zk_rel_hostname,
+                            mock_ch_ip_apt_install):
+        """
+        Test config changed given certificates relation and cluster exists.
+
+        Expected flow of the test and outcome:
+        1) The charm will issue 2x certificate requests on request_server_cert
+        2) Certificates are generated and -changed event issued
+        3) Cluster also formed
+        4) Check if Truststore is correctly formed with cluster certs
+        """
+        mock_zk_binding_addr.return_value = "192.168.200.200"
+        mock_zk_advertise_addr.return_value = "192.168.200.200"
+        mock_cluster_binding_addr.return_value = "192.168.100.100"
+        mock_cluster_advertise_addr.return_value = "192.168.100.100"
+        # Avoid triggering the RestartEvent
+        mock_service_running.return_value = False
+        mock_check_if_ready_restart.return_value = False
+        mock_get_hostname.return_value = \
+            "ansiblezookeeper0.example.com"
+        mock_zk_rel_hostname.return_value = \
+            "ansiblezookeeper0.example.com"
+        # Remove the random password generation
+        mock_gen_random_pwd.return_value = "aaaa"
+        mock_java_gen_random_pwd.return_value = "aaaa"
+        # Prepare cleanup
+
+        def __cleanup():
+            for i in ["/tmp/testcert*", "/tmp/test-ts-quorum.jks"]:
+                try:
+                    os.remove(i)
+                except: # noqa
+                    pass
+
+        __cleanup()
+        certs = {}
+        crt, key = security.generateSelfSigned("/tmp", "testcert")
+        for i in range(0, 3):
+            certs[i] = {}
+            certs[i]["crt"] = crt
+            certs[i]["key"] = key
+        __cleanup()  # cleaning up the intermediate certs
+
+        # Prepare test
+        harness = Harness(charm.ZookeeperCharm)
         harness.update_config({
             "version": "6.1",
             "distro": "confluent",
@@ -154,187 +423,315 @@ class TestCharm(unittest.TestCase):
             "quorum-truststore-path": "/var/ssl/private/quorum-ts.jks",
             "truststore-path": "/var/ssl/private/ssl-ts.jks",
             "keystore-path": "/var/ssl/private/ssl-ks.jks",
-            "sslQuorum": False,
+            "sslQuorum": True,
             "generate-root-ca": False,
             "log4j-root-logger": "DEBUG, stdout, zkAppender",
             "cluster-count": 3
         })
-        harness.add_relation('cluster', 'zookeeper')
-#        harness.add_
-
-    @patch.object(kafka, "open_port")
-    @patch.object(NRPEClient, "add_check")
-    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
-                  'advertise_addr', new_callable=PropertyMock)
-    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
-                  'scrape_request', new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
-    @patch.object(cluster.ZookeeperCluster, "relations",
-                  new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
-    @patch.object(model.Model, "get_binding")
-    @patch.object(cluster, "get_hostname")
-    @patch.object(cluster.ZookeeperCluster, "unit",
-                  new_callable=PropertyMock)
-    @patch.object(cluster.ZookeeperCluster, "relation",
-                  new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCharm,
-                  'is_ssl_enabled')
-    @patch.object(charm, "render")
-    def test_confluent_simple_render_zk_props(self, mock_render,
-                                              mock_is_client_ssl,
-                                              mock_cluster_relation,
-                                              mock_cluster_unit,
-                                              mock_hostname,
-                                              mock_get_binding,
-                                              mock_svc_override,
-                                              mock_cluster_relations,
-                                              mock_folders_perms,
-                                              mock_prometheus_scrape_req,
-                                              mock_prometheus_advertise_addr,
-                                              mock_nrpe_add_check,
-                                              mock_open_port):
-
-        mock_hostname.return_value = "ansiblezookeeper2.example.com"
-        mock_cluster_relation.return_value = MockRelations(data={
-            "zk/0": {"myid": 1,
-                     "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
-            "zk/1": {"myid": 2,
-                     "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
-            "zk/2": {"myid": 3,
-                     "endpoint": "ansiblezookeeper1.example.com:2888:3888"}
+        # Certificates relation
+        certificate_id = harness.add_relation("certificates", "easyrsa")
+        harness.add_relation_unit(certificate_id, "easyrsa/0")
+        harness.update_relation_data(certificate_id, "easyrsa/0", {
+            "zookeeper_0.server.cert": certs[0]["crt"],
+            "zookeeper_0.server.key": certs[0]["key"],
+            "zookeeper_0.processed_requests": {"192.168.200.200": {
+                "cert": certs[0]["crt"],
+                "key": certs[0]["key"]
+            }}
         })
-        mock_cluster_relations.return_value = \
-            mock_cluster_relation.return_value.relations
-        mock_cluster_unit.return_value = "zk/0"
-        mock_render.return_value = ""
-        mock_is_client_ssl.return_value = False
-        harness = Harness(charm.ZookeeperCharm)
+
+        # Complete the cluster
+        cluster_id = harness.add_relation("cluster", "zookeeper")
+
+        harness.add_relation_unit(cluster_id, "zookeeper/1")
+        harness.update_relation_data(cluster_id, "zookeeper/1", {
+            "tls_cert": certs[1]["crt"], "myid": 2,
+            "endpoint": "ansiblezookeeper1.example.com:2888:3888"
+        })
+        harness.add_relation_unit(cluster_id, "zookeeper/2")
+        harness.update_relation_data(cluster_id, "zookeeper/2", {
+            "tls_cert": certs[2]["crt"], "myid": 3,
+            "endpoint": "ansiblezookeeper2.example.com:2888:3888"
+        })
+        harness.begin_with_initial_hooks()
         self.addCleanup(harness.cleanup)
-        harness.begin()
-        harness._update_config({
-            "cluster-count": 3
-        })
         zk = harness.charm
-        zk.cluster.state.myid = 1
-        zk._on_cluster_relation_changed(
-            MockEvent(relations=mock_cluster_relation.return_value))
-        zk._render_zk_properties()
-        self.assertEqual(ZK_PROPERTIES,
-                         self._simulate_render(
-                             ctx=mock_render.call_args.kwargs["context"],
-                             templ_file='zookeeper.properties.j2'))
+        # If cluster relation events (-joined, -changed) happens before
+        # certificate events, then cluster-* will be deferred.
+        # Run reemit to ensure they are run.
+        zk.framework.reemit()
 
+        # Check certificate and key have been correctly set:
+        self.assertEqual(certs[0]["crt"], zk.get_ssl_cert())
+        self.assertEqual(certs[0]["key"], zk.get_ssl_key())
+
+        # keystore is set, assert generate_keystores was called
+        mock_generate_keystores.assert_called()
+        # Assert log4j properties was correctly rendered
+        mock_render.assert_any_call(
+            source='zookeeper_log4j.properties.j2',
+            target='/etc/kafka/zookeeper-log4j.properties',
+            owner='test', group='test', perms=0o640,
+            context={'root_logger': 'DEBUG, stdout, zkAppender'}
+        )
+        # Assert the service override
+        mock_kafka_class_render.assert_any_call(
+            source='kafka_override.conf.j2',
+            target='/etc/systemd/system/confluent-zookeeper.service.d/'
+                   'override.conf',
+            owner='test', group='test', perms=0o644,
+            context={
+                'service_unit_overrides': {},
+                'service_overrides': {'User': 'test', 'Group': 'test'},
+                'service_environment_overrides': {
+                    'KAFKA_HEAP_OPTS': '-Xmx1g',
+                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:'
+                                        '/etc/kafka/zookeeper-log4j.'
+                                        'properties',
+                    'LOG_DIR': '/var/log/kafka',
+                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}}
+        )
+        # Assert the Truststore creation
+        # Assert the zk properties was correctly rendered
+        mock_render.assert_any_call(
+            source='zookeeper.properties.j2',
+            target='/etc/kafka/zookeeper.properties',
+            owner='test', group='test', perms=0o640,
+            context={
+                'zk_props': {
+                    'maxClientCnxns': 0,
+                    'initLimit': 5,
+                    'syncLimit': 2,
+                    'autopurge.snapRetainCount': 10,
+                    'autopurge.purgeInterval': 1,
+                    'admin.enableServer': False,
+                    'dataDir': '/var/lib/zookeeper',
+                    'dataLogDir': '/var/lib/kafka/zookeeper_log',
+                    'secureClientPort': 2182,
+                    'serverCnxnFactory': 'org.apache.zookeeper.'
+                                         'server.NettyServerCnxnFactory',
+                    'authProvider.x509': 'org.apache.zookeeper.server.'
+                                         'auth.X509AuthenticationProvider',
+                    'sslQuorum': 'true',
+                    'ssl.clientAuth': 'none',
+                    'ssl.keyStore.location': '/var/ssl/private/ssl-ks.jks',
+                    'ssl.keyStore.password': 'aaaa',
+                    'ssl.trustStore.location': '/var/ssl/private/ssl-ts.jks',
+                    'ssl.trustStore.password': 'aaaa',
+                    'ssl.quorum.keyStore.location':
+                    '/var/ssl/private/quorum-ks.jks',
+
+                    'ssl.quorum.keyStore.password': 'aaaa',
+                    'ssl.quorum.trustStore.location':
+                    '/var/ssl/private/quorum-ts.jks',
+
+                    'ssl.quorum.trustStore.password': 'aaaa',
+                    'server.2': 'ansiblezookeeper1.example.com:2888:3888',
+                    'server.1': 'ansiblezookeeper0.example.com:2888:3888',
+                    'server.3': 'ansiblezookeeper2.example.com:2888:3888'
+                }}
+            )
+
+    @patch.object(cluster.ZookeeperCluster,
+                  'binding_addr', new_callable=PropertyMock)
+    @patch.object(cluster, 'get_hostname')
+    @patch.object(cluster, "setFilePermissions")
+    @patch('builtins.open',
+           new_callable=mock_open, read_data='')
+    @patch.object(kafka_relation_base, 'CreateTruststore')
+    @patch.object(charm, 'close_port')
+    @patch.object(charm, 'open_port')
+    @patch.object(charm.ZookeeperCharm, '_check_if_ready_to_start')
+    @patch.object(charm, 'service_resume')
+    @patch.object(charm, 'service_restart')
+    @patch.object(charm, 'service_running')
+    @patch.object(charm.ZookeeperCharm, 'get_quorum_key')
+    @patch.object(charm.ZookeeperCharm, 'get_quorum_cert')
+    @patch.object(charm.ZookeeperCharm, 'get_ssl_key')
+    @patch.object(charm.ZookeeperCharm, 'get_ssl_cert')
+    @patch.object(charm.ZookeeperCharm, '_generate_keystores')
+    @patch.object(charm.ZookeeperCharm, '_cert_relation_set')
     @patch.object(kafka, "open_port")
     @patch.object(NRPEClient, "add_check")
     @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
                   'advertise_addr', new_callable=PropertyMock)
     @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
                   'scrape_request', new_callable=PropertyMock)
+    @patch.object(java, "genRandomPassword")
+    @patch.object(charm, "genRandomPassword")
+    # Those two patches set _cert_relation_set + get_ssl* as empty
+    @patch.object(TLSCertificateRequiresRelation, "get_server_certs")
+    @patch.object(TLSCertificateRequiresRelation, "request_server_cert")
+    @patch.object(charm, "PKCS12CreateKeystore")
+    @patch.object(kafka.KafkaJavaCharmBase, "_on_install")
+    @patch.object(charm.ZookeeperCharm, "create_data_and_log_dirs")
+    @patch.object(kafka.KafkaJavaCharmBase, "install_packages")
     @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
-    @patch.object(cluster.ZookeeperCluster, "relations",
-                  new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
-    @patch.object(model.Model, "get_binding")
-    @patch.object(cluster, "get_hostname")
-    @patch.object(cluster.ZookeeperCluster, "unit",
-                  new_callable=PropertyMock)
-    @patch.object(cluster.ZookeeperCluster, "relation",
-                  new_callable=PropertyMock)
-    @patch.object(kafka.KafkaJavaCharmBase, "create_data_and_log_dirs")
-    @patch.object(zkRelation.ZookeeperProvidesRelation, "set_TLS_auth")
-    @patch.object(cluster.ZookeeperCluster, "set_ssl_keypair")
-    @patch.object(charm.ZookeeperCharm, "unit_folder",
-                  new_callable=PropertyMock)
-    @patch.object(charm.ZookeeperCharm, '_check_if_ready_to_start')
-    @patch.object(host, 'service_restart')
-    @patch.object(host, 'service_reload')
-    @patch.object(host, 'service_running')
-    @patch.object(charm.ZookeeperCharm, 'render_service_override_file')
-    @patch.object(charm.ZookeeperCharm, '_render_zk_log4j_properties')
-    @patch.object(charm.ZookeeperCharm, 'is_ssl_enabled')
+    @patch.object(kafka, "render")
     @patch.object(charm, "render")
-    def test_confluent_ssl_render_zk_props(self,
-                                           mock_render,
-                                           mock_is_client_ssl,
-                                           mock_log_4j,
-                                           mock_svc_file,
-                                           mock_svc_running,
-                                           mock_svc_reload,
-                                           mock_svc_restart,
-                                           mock_check_if_ready,
-                                           mock_unit_folder,
-                                           mock_cluster_ssl_keypair,
-                                           mock_tls_auth,
-                                           mock_create_log_dir,
-                                           mock_cluster_relation,
-                                           mock_cluster_unit,
-                                           mock_get_hostname,
-                                           mock_get_binding,
-                                           mock_svc_override,
-                                           mock_cluster_relations,
-                                           mock_folders_perms,
-                                           mock_prometheus_scrape_req,
-                                           mock_prometheus_advertise_addr,
-                                           mock_nrpe_add_check,
-                                           mock_open_port):
+    def test_config_changed(self,
+                            mock_render,
+                            mock_kafka_class_render,
+                            mock_folders_perms,
+                            mock_on_install_pkgs,
+                            mock_create_dirs,
+                            mock_super_install,
+                            mock_create_jks,
+                            mock_request_server_cert,
+                            mock_get_server_certs,
+                            mock_gen_random_pwd,
+                            mock_java_gen_random_pwd,
+                            mock_prometheus_scrape_req,
+                            mock_prometheus_advertise_addr,
+                            mock_nrpe_add_check,
+                            mock_kafka_open_port,
+                            mock_cert_relation_set,
+                            mock_generate_keystores,
+                            mock_get_ssl_cert,
+                            mock_get_ssl_key,
+                            mock_get_quorum_ssl_cert,
+                            mock_get_quorum_ssl_key,
+                            mock_service_running,
+                            mock_svc_restart,
+                            mock_svc_resume,
+                            mock_check_if_ready_restart,
+                            mock_open_port,
+                            mock_close_port,
+                            mock_create_ts,
+                            mock_open,
+                            mock_set_file_perms,
+                            mock_get_hostname,
+                            mock_cluster_binding_addr):
+        # Avoid triggering the RestartEvent
+        mock_service_running.return_value = False
+        mock_check_if_ready_restart.return_value = False
+        mock_get_hostname.return_value = \
+            "ansiblezookeeper0.example.com"
+        # Remove the random password generation
+        mock_gen_random_pwd.return_value = "aaaa"
+        mock_java_gen_random_pwd.return_value = "aaaa"
+        # Prepare cleanup
 
         def __cleanup():
-            for i in ["/tmp/ks-charm.p12", "/tmp/ks-charm*",
-                      "/tmp/test-quorum-*", "/tmp/3jtieo-ks.jks",
-                      "/tmp/3jtieo-ts.jks", "/tmp/3jtieo-quorum-ks.jks",
-                      "/tmp/3jtieo-quorum-ts.jks"]:
+            for i in ["/tmp/testcert*", "/tmp/test-ts-quorum.jks"]:
                 try:
                     os.remove(i)
                 except: # noqa
                     pass
+
         __cleanup()
-        mock_get_hostname.return_value = "ansiblezookeeper2.example.com"
-        mock_cluster_relation.return_value = MockRelations(data={
-            "zk/0": {"myid": 1,
-                     "endpoint": "ansiblezookeeper2.example.com:2888:3888"},
-            "zk/1": {"myid": 2,
-                     "endpoint": "ansiblezookeeper3.example.com:2888:3888"},
-            "zk/2": {"myid": 3,
-                     "endpoint": "ansiblezookeeper1.example.com:2888:3888"}
-        })
-        mock_cluster_relations.return_value = \
-            mock_cluster_relation.return_value.relations
-        mock_cluster_unit.return_value = "zk/0"
-        mock_svc_running.return_value = True
-        mock_render.return_value = ""
-        mock_unit_folder.return_value = "/tmp"
-        mock_is_client_ssl.return_value = False
+        certs = {}
+        crt, key = security.generateSelfSigned("/tmp", "testcert")
+        mock_get_ssl_cert.return_value = crt
+        mock_get_ssl_key.return_value = key
+        mock_get_quorum_ssl_cert.return_value = crt
+        mock_get_quorum_ssl_key.return_value = key
+        for i in range(1, 3):
+            certs[i] = {}
+            certs[i]["crt"] = crt
+            certs[i]["key"] = key
+        __cleanup()  # cleaning up the intermediate certs
+
+        # Mock-up values
+        mock_cert_relation_set.return_value = True
+        # Prepare test
         harness = Harness(charm.ZookeeperCharm)
+        harness.update_config({
+            "version": "6.1",
+            "distro": "confluent",
+            "user": "test",
+            "group": "test",
+            "quorum-keystore-path": "/var/ssl/private/quorum-ks.jks",
+            "quorum-truststore-path": "/var/ssl/private/quorum-ts.jks",
+            "truststore-path": "/var/ssl/private/ssl-ts.jks",
+            "keystore-path": "/var/ssl/private/ssl-ks.jks",
+            "sslQuorum": True,
+            "generate-root-ca": False,
+            "log4j-root-logger": "DEBUG, stdout, zkAppender",
+            "cluster-count": 3
+        })
+        # Complete the cluster
+        cluster_id = harness.add_relation("cluster", "zookeeper")
+
+        harness.add_relation_unit(cluster_id, "zookeeper/1")
+        harness.update_relation_data(cluster_id, "zookeeper/1", {
+            "tls_cert": certs[1]["crt"], "myid": 2,
+            "endpoint": "ansiblezookeeper1.example.com:2888:3888"
+        })
+        harness.add_relation_unit(cluster_id, "zookeeper/2")
+        harness.update_relation_data(cluster_id, "zookeeper/2", {
+            "tls_cert": certs[2]["crt"], "myid": 3,
+            "endpoint": "ansiblezookeeper2.example.com:2888:3888"
+        })
+        harness.begin_with_initial_hooks()
         self.addCleanup(harness.cleanup)
-        harness.begin()
         zk = harness.charm
-        zk.cluster.state.myid = 1
-        zk._on_cluster_relation_changed(
-            MockEvent(relations=mock_cluster_relation.return_value))
-        harness.update_config(
-            key_values={"user": getCurrentUserAndGroup()[0],
-                        "group": getCurrentUserAndGroup()[1],
-                        "quorum-keystore-path": "/tmp/3jtieo-quorum-ks.jks",
-                        "quorum-truststore-path": "/tmp/3jtieo-quorum-ts.jks",
-                        "keystore-path": "/tmp/3jtieo-ks.jks",
-                        "truststore-path": "/tmp/3jtieo-ts.jks",
-                        "generate-root-ca": True,
-                        "regenerate-keystore-truststore": True,
-                        "ssl_quorum": True})
-        # Replace the random variables for expected ones
-        # since it is not possible to check them
-        ctx = mock_render.call_args.kwargs["context"]
-        ctx["zk_props"]["ssl.quorum.trustStore.password"] = \
-            "confluenttruststorepass"
-        ctx["zk_props"]["ssl.quorum.keyStore.password"] = \
-            "confluentkeystorestorepass"
-        ctx["zk_props"]["ssl.trustStore.password"] = \
-            "confluenttruststorepass"
-        ctx["zk_props"]["ssl.keyStore.password"] = \
-            "confluentkeystorestorepass"
-        zk_props = self._simulate_render(
-                       ctx=ctx,
-                       templ_file='zookeeper.properties.j2')
-        self.assertEqual(ZK_PROPERTIES_WITH_SSL, zk_props)
-        __cleanup()
+        # If cluster relation events (-joined, -changed) happens before
+        # certificate events, then cluster-* will be deferred.
+        # Run reemit to ensure they are run.
+        zk.framework.reemit()
+        # keystore is set, assert generate_keystores was called
+        mock_generate_keystores.assert_called()
+        # Assert log4j properties was correctly rendered
+        mock_render.assert_any_call(
+            source='zookeeper_log4j.properties.j2',
+            target='/etc/kafka/zookeeper-log4j.properties',
+            owner='test', group='test', perms=0o640,
+            context={'root_logger': 'DEBUG, stdout, zkAppender'}
+        )
+        # Assert the service override
+        mock_kafka_class_render.assert_any_call(
+            source='kafka_override.conf.j2',
+            target='/etc/systemd/system/confluent-zookeeper.service.d/'
+                   'override.conf',
+            owner='test', group='test', perms=0o644,
+            context={
+                'service_unit_overrides': {},
+                'service_overrides': {'User': 'test', 'Group': 'test'},
+                'service_environment_overrides': {
+                    'KAFKA_HEAP_OPTS': '-Xmx1g',
+                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:'
+                                        '/etc/kafka/zookeeper-log4j.'
+                                        'properties',
+                    'LOG_DIR': '/var/log/kafka',
+                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}}
+        )
+        # Assert the zk properties was correctly rendered
+        mock_render.assert_any_call(
+            source='zookeeper.properties.j2',
+            target='/etc/kafka/zookeeper.properties',
+            owner='test', group='test', perms=0o640,
+            context={
+                'zk_props': {
+                    'maxClientCnxns': 0,
+                    'initLimit': 5,
+                    'syncLimit': 2,
+                    'autopurge.snapRetainCount': 10,
+                    'autopurge.purgeInterval': 1,
+                    'admin.enableServer': False,
+                    'dataDir': '/var/lib/zookeeper',
+                    'dataLogDir': '/var/lib/kafka/zookeeper_log',
+                    'secureClientPort': 2182,
+                    'serverCnxnFactory': 'org.apache.zookeeper.'
+                                         'server.NettyServerCnxnFactory',
+                    'authProvider.x509': 'org.apache.zookeeper.server.'
+                                         'auth.X509AuthenticationProvider',
+                    'sslQuorum': 'true',
+                    'ssl.clientAuth': 'none',
+                    'ssl.keyStore.location': '/var/ssl/private/ssl-ks.jks',
+                    'ssl.keyStore.password': 'aaaa',
+                    'ssl.trustStore.location': '/var/ssl/private/ssl-ts.jks',
+                    'ssl.trustStore.password': 'aaaa',
+                    'ssl.quorum.keyStore.location':
+                    '/var/ssl/private/quorum-ks.jks',
+
+                    'ssl.quorum.keyStore.password': 'aaaa',
+                    'ssl.quorum.trustStore.location':
+                    '/var/ssl/private/quorum-ts.jks',
+
+                    'ssl.quorum.trustStore.password': 'aaaa',
+                    'server.2': 'ansiblezookeeper1.example.com:2888:3888',
+                    'server.1': 'ansiblezookeeper0.example.com:2888:3888',
+                    'server.3': 'ansiblezookeeper2.example.com:2888:3888'
+                }}
+            )

@@ -1,6 +1,11 @@
 # Copyright 2021 pguimaraes
 # See LICENSE file for licensing details.
 options:
+  version:
+    default: '6.1'
+    type: string
+    description: |
+      Sets the kafka version for the given distro.
   distro:
     default: 'confluent'
     type: string
@@ -8,6 +13,11 @@ options:
       Only two values possible: apache or confluent. Defines if will use apache kafka
       or confluent distro to install kafka packages. Both distro and version
       should be set.
+  cluster-count:
+    default: 3
+    type: int
+    description: |
+      The minimum amount of units to bootstrap the cluster
   install_method:
     default: 'package'
     type: string
@@ -46,16 +56,6 @@ options:
     description: |
       Defines the kerberos domain for the host: {{protocol}}/<name of the host>.<kerberos-domain>@<realm>
       The value set here should be the domain for the default gateway's IP.
-  cluster-count:
-    default: 3
-    type: int
-    description: |
-      The minimum amount of units to bootstrap the cluster
-  version:
-    default: '6.1'
-    type: string
-    description: |
-      Sets the kafka version for the given distro.
   keystore-path:
     default: '/var/ssl/private/zookeeper.keystore.jks'
     type: string

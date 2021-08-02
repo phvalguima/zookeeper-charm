@@ -9,6 +9,7 @@ import yaml
 import json
 
 from ops.main import main
+from ops.charm import InstallEvent
 from ops.model import (
     BlockedStatus,
     ActiveStatus,
@@ -17,7 +18,13 @@ from ops.model import (
 
 from charmhelpers.core.templating import render
 from charmhelpers.core.host import (
-    service_running
+    service_running,
+    service_resume,
+    service_restart
+)
+from charmhelpers.core.hookenv import (
+    open_port,
+    close_port
 )
 
 from wand.apps.relations.tls_certificates import (
@@ -106,6 +113,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(ts_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(ks_zookeeper_pwd=genRandomPassword())
         self.ks.set_default(config_state="{}")
+        self.ks.set_default(need_restart=False)
+        self.ks.set_default(port=0)
         # LMA integrations
         self.prometheus = \
             KafkaJavaCharmBasePrometheusMonitorNode(
@@ -137,10 +146,41 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         coordinator.handle_locks(self.unit)
         super().on_update_status(event)
 
+    @property
+    def ctx(self):
+        return json.loads(self.ks.config_state)
+
+    @ctx.setter
+    def ctx(self, c):
+        self.ks.ctx = json.dumps(c)
+
     def on_restart_event(self, event):
+        if not self.ks.need_restart:
+            # There is a chance of several restart events being stacked.
+            # This check ensures a single restart happens if several
+            # restart events have been requested.
+            # In this case, a restart already happened and no other restart
+            # has been emitted, therefore, avoid restarting.
+
+            # That is possible because event.restart() acquires the lock,
+            # (either at that hook or on a future hook) and then, returns
+            # True + release the lock at the end.
+            # Only then, we set need_restart to False (no pending lock
+            # requests for this unit anymore).
+            # We can drop any other restart events that were stacked and
+            # waiting for processing.
+            return
         if event.restart():
+            # Restart was successful, if the charm is keeping track
+            # of a context, that is the place it should be updated
             self.ks.config_state = event.ctx
+            # Toggle need_restart as we just did it.
+            self.ks.need_restart = False
+            self.model.unit.status = \
+                ActiveStatus("service running")
         else:
+            # defer the RestartEvent as it is still waiting for the
+            # lock to be released.
             event.defer()
 
     def on_upload_keytab_action(self, event):
@@ -156,15 +196,32 @@ class ZookeeperCharm(KafkaJavaCharmBase):
 
     def on_certificates_relation_joined(self, event):
         self.certificates.on_tls_certificate_relation_joined(event)
+        # Relation just joined, request certs for each of the relations
+        # That will happen once. The certificates will be generated, then
+        # it will trigger a -changed Event on certificates, which will
+        # call the config-changed logic once again.
+        # That way, the certificates will be added to the truststores
+        # and shared across the other relations.
+
+        # In case several relations shares the same set of IPs (spaces),
+        # the last relation will get to set the certificate values.
+        # Therefore, the order of the list below is relevant.
+        for r in [self.cluster, self.zk]:
+            self._cert_relation_set(None, r)
+
         self._on_config_changed(event)
 
     def on_certificates_relation_changed(self, event):
+        """Certificates changed
+
+        That can mean the requested certs have been issued. Therefore,
+        config_changed logic is called once again to regenerate configs
+        with new cert/key AND share those across the relations as needed
+        """
         self.certificates.on_tls_certificate_relation_changed(event)
         self._on_config_changed(event)
 
     def on_zookeeper_relation_joined(self, event):
-        if not self._cert_relation_set(event, self.zk):
-            return
         self.zk.user = self.config.get("user", "")
         self.zk.group = self.config.get("group", "")
         self.zk.mode = 0o640
@@ -180,8 +237,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def on_zookeeper_relation_changed(self, event):
-        if not self._cert_relation_set(event, self.zk):
-            return
         self.zk.user = self.config.get("user", "")
         self.zk.group = self.config.get("group", "")
         self.zk.mode = 0o640
@@ -197,19 +252,28 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def _cert_relation_set(self, event, rel=None):
+        # Will introduce this CN format later
+        def __get_cn():
+            return "*." + ".".join(socket.getfqdn().split(".")[1:])
         # generate cert request if tls-certificates available
-        # rel may be set to None in cases such
-        # as config-changed or install events
-        # In these cases, the goal is to run the
-        # validation at the end of this method
+        # rel may be set to None in cases such as config-changed
+        # or install events. In these cases, the goal is to run
+        # the validation at the end of this method
         if rel:
-            if self.certificates.relation and rel.relation:
+            if self.certificates.relation:
                 sans = [
-                    rel.binding_addr,
-                    rel.advertise_addr,
-                    rel.hostname,
-                    socket.gethostname()
+                    socket.gethostname(),
+                    socket.getfqdn()
                 ]
+                # We do not need to know if any relations exists but rather
+                # if binding/advertise addresses exists.
+                if rel.binding_addr:
+                    sans.append(rel.binding_addr)
+                if rel.advertise_addr:
+                    sans.append(rel.advertise_addr)
+                if rel.hostname:
+                    sans.append(rel.hostname)
+
                 # Common name is always CN as this is the element
                 # that organizes the cert order from tls-certificates
                 self.certificates.request_server_cert(
@@ -217,22 +281,20 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                     sans=sans)
             logger.info("Either certificates "
                         "relation not ready or not set")
-        # This try/except will raise an exception if
-        # tls-certificate is set and there is no
-        # certificate available on the relation yet. That will also cause the
+        # This try/except will raise an exception if tls-certificate
+        # is set and there is no certificate available on the relation yet.
+        # That will also cause the
         # event to be deferred, waiting for certificates relation to finish
-        # If tls-certificates is not set, then the try
-        # will run normally, either
-        # marking there is no certificate configuration
-        # set or concluding the method.
+        # If tls-certificates is not set, then the try will run normally,
+        # either marking there is no certificate configuration set or
+        # concluding the method.
         try:
-            if (not self.get_ssl_cert() or not self.get_ssl_key() or
-               not self.get_quorum_cert() or not self.get_quorum_key()):
+            if (not self.get_ssl_cert() or not self.get_ssl_key()):
                 self.model.unit.status = \
-                    BlockedStatus("Waiting for certificates"
-                                  " relation or option")
-                logger.info("Waiting for certificates"
-                            " relation to publish data")
+                    BlockedStatus("Waiting for certificates "
+                                  "relation or option")
+                logger.info("Waiting for certificates relation "
+                            "to publish data")
                 return False
         # These excepts will treat the case tls-certificates relation is used
         # but the relation is not ready yet
@@ -257,11 +319,15 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         if len(self.config.get("ssl_cert")) > 0 and \
            len(self.config.get("ssl_key")) > 0:
             return base64.b64decode(self.config["ssl_cert"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        c = certs[self.zk.binding_addr]["cert"] + \
-            self.certificates.get_chain()
-        logger.debug("SSL Certificate chain"
-                     " from tls-certificates: {}".format(c))
+        try:
+            certs = self.certificates.get_server_certs()
+            c = certs[self.zk.binding_addr]["cert"] + \
+                self.certificates.get_chain()
+            logger.debug("SSL Certificate chain"
+                         " from tls-certificates: {}".format(c))
+        except TLSCertificateDataNotFoundInRelationError:
+            # Certificates not ready yet, return empty
+            return ""
         return c
 
     def get_ssl_key(self):
@@ -270,8 +336,12 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         if len(self.config.get("ssl_cert")) > 0 and \
            len(self.config.get("ssl_key")) > 0:
             return base64.b64decode(self.config["ssl_key"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        k = certs[self.zk.binding_addr]["key"]
+        try:
+            certs = self.certificates.get_server_certs()
+            k = certs[self.zk.binding_addr]["key"]
+        except TLSCertificateDataNotFoundInRelationError:
+            # Certificates not ready yet, return empty
+            return ""
         return k
 
     def get_quorum_cert(self):
@@ -281,11 +351,15 @@ class ZookeeperCharm(KafkaJavaCharmBase):
            len(self.config.get("ssl-quorum-key")) > 0:
             return base64.b64decode(
                 self.config["ssl-quorum-cert"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        c = certs[self.cluster.binding_addr]["cert"] + \
-            self.certificates.get_chain()
-        logger.debug("Quorum Certificate chain"
-                     " from tls-certificates: {}".format(c))
+        try:
+            certs = self.certificates.get_server_certs()
+            c = certs[self.cluster.binding_addr]["cert"] + \
+                self.certificates.get_chain()
+            logger.debug("Quorum Certificate chain"
+                         " from tls-certificates: {}".format(c))
+        except TLSCertificateDataNotFoundInRelationError:
+            # Certificates not ready yet, return empty
+            return ""
         return c
 
     def get_quorum_key(self):
@@ -295,8 +369,12 @@ class ZookeeperCharm(KafkaJavaCharmBase):
            len(self.config.get("ssl-quorum-key")) > 0:
             return base64.b64decode(
                 self.config["ssl-quorum-key"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        k = certs[self.cluster.binding_addr]["key"]
+        try:
+            certs = self.certificates.get_server_certs()
+            k = certs[self.cluster.binding_addr]["key"]
+        except TLSCertificateDataNotFoundInRelationError:
+            # Certificates not ready yet, return empty
+            return ""
         return k
 
     def get_ssl_keystore(self):
@@ -430,8 +508,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def _on_cluster_relation_joined(self, event):
-        if not self._cert_relation_set(event, self.cluster):
-            return
         self.cluster.user = self.config.get("user", "")
         self.cluster.group = self.config.get("group", "")
         self.cluster.mode = 0o640
@@ -452,8 +528,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def _on_cluster_relation_changed(self, event):
-        if not self._cert_relation_set(event, self.cluster):
-            return
         self.cluster.user = self.config.get("user", "")
         self.cluster.group = self.config.get("group", "")
         self.cluster.mode = 0o640
@@ -488,6 +562,17 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         return True
 
     def _render_zk_properties(self):
+        """
+        Render zookeeper.properties
+
+        There are several tasks involved in rendering this file:
+        1) Preparing storage folders
+        2) Checking if certificate information has been passed correctly
+        2.1) Share the cert information with ZK relation
+        3) Setup Kerberos
+        4) Cluster tasks
+        4.1) Set certificate info
+        """
         logger.info("Start to render zookeeper.properties")
         zk_props = \
             yaml.safe_load(self.config.get("zookeeper-properties", "")) or {}
@@ -495,54 +580,57 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             list(yaml.safe_load(self.config["data-dir"]).items())[0][1]
         zk_props["dataLogDir"] = \
             list(yaml.safe_load(self.config["data-log-dir"]).items())[0][1]
-        if (len(self.get_ssl_cert()) > 0 and len(self.get_ssl_key()) > 0):
-            zk_props["secureClientPort"] = self.config.get("clientPort", 2182)
-            zk_props["serverCnxnFactory"] = \
-                "org.apache.zookeeper.server.NettyServerCnxnFactory"
-            zk_props["authProvider.x509"] = \
-                "org.apache.zookeeper.server.auth.X509AuthenticationProvider"
-            # We change this later down the line if needed
-            zk_props["sslQuorum"] = "true" \
-                if self.config.get("sslQuorum", False) else "false"
-            # Used for client-server communication
-            zk_props["ssl.clientAuth"] = "need" \
-                if self.config.get("sslClientAuth", False) else "none"
-            if self.config["sslClientAuth"]:
+        if len(self.get_ssl_keystore()) > 0:
+            if (len(self.get_ssl_cert()) > 0 and len(self.get_ssl_key()) > 0):
+                zk_props["secureClientPort"] = \
+                    self.config.get("clientPort", 2182)
+                zk_props["serverCnxnFactory"] = \
+                    "org.apache.zookeeper.server.NettyServerCnxnFactory"
                 zk_props["authProvider.x509"] = \
                     "org.apache.zookeeper.server.auth." + \
                     "X509AuthenticationProvider"
-            zk_props["ssl.keyStore.location"] = \
-                self.config.get(
-                    "keystore-path",
-                    "/var/ssl/private/zookeeper.keystore.jks")
-            zk_props["ssl.keyStore.password"] = self.ks.ks_password
-            # If truststore-path is unset, then it means the charm should use
-            # Java's standard truststore instead to connect to
-            if len(self.config.get("truststore-path", "")) > 0:
-                zk_props["ssl.trustStore.location"] = \
-                    self.config["truststore-path"]
-                zk_props["ssl.trustStore.password"] = self.ks.ts_password
-            else:
-                logger.debug("Truststore not set for zookeeper relation, "
-                             "Java truststore will be used instead")
-            # Now that mTLS is set, we announce it to the neighbours
-            try:
-                logger.debug("Passing on the cert to "
-                             "zookeeper relation object")
-                self.zk.set_mTLS_auth(
-                    self.get_ssl_cert(),
+                # We change this later down the line if needed
+                zk_props["sslQuorum"] = "true" \
+                    if self.config.get("sslQuorum", False) else "false"
+                # Used for client-server communication
+                zk_props["ssl.clientAuth"] = "need" \
+                    if self.config.get("sslClientAuth", False) else "none"
+                if self.config["sslClientAuth"]:
+                    zk_props["authProvider.x509"] = \
+                        "org.apache.zookeeper.server.auth." + \
+                        "X509AuthenticationProvider"
+                zk_props["ssl.keyStore.location"] = \
                     self.config.get(
-                        "truststore-path",
-                        "/var/ssl/private/zookeeper.truststore.jks"),
-                    self.ks.ts_password,
-                    user=self.config["user"],
-                    group=self.config["group"],
-                    mode=0o640)
-            except KafkaRelationBaseNotUsedError as e:
-                # Relation not been used any other application, move on
-                logger.info(str(e))
-            except KafkaRelationBaseTLSNotSetError as e:
-                self.model.unit.status = BlockedStatus(str(e))
+                        "keystore-path",
+                        "/var/ssl/private/zookeeper.keystore.jks")
+                zk_props["ssl.keyStore.password"] = self.ks.ks_password
+                # If truststore-path is unset, then it means the charm
+                # should use Java's standard truststore instead to connect to
+                if len(self.config.get("truststore-path", "")) > 0:
+                    zk_props["ssl.trustStore.location"] = \
+                        self.config["truststore-path"]
+                    zk_props["ssl.trustStore.password"] = self.ks.ts_password
+                else:
+                    logger.debug("Truststore not set for zookeeper relation, "
+                                 "Java truststore will be used instead")
+                # Now that mTLS is set, we announce it to the neighbours
+                try:
+                    logger.debug("Passing on the cert to "
+                                 "zookeeper relation object")
+                    self.zk.set_mTLS_auth(
+                        self.get_ssl_cert(),
+                        self.config.get(
+                            "truststore-path",
+                            "/var/ssl/private/zookeeper.truststore.jks"),
+                        self.ks.ts_password,
+                        user=self.config["user"],
+                        group=self.config["group"],
+                        mode=0o640)
+                except KafkaRelationBaseNotUsedError as e:
+                    # Relation not been used any other application, move on
+                    logger.info(str(e))
+                except KafkaRelationBaseTLSNotSetError as e:
+                    self.model.unit.status = BlockedStatus(str(e))
 
         else:
             zk_props["ssl.clientAuth"] = "none"
@@ -569,9 +657,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                               " come up". format(
                                   self.config.get("cluster-count")))
             return
-        if self.config.get("cluster-count", 3) > \
-           len(self.cluster.all_units(self.cluster.relations)):
-            all_u = len(self.cluster.all_units(self.cluster.relations))
+        # Check if cluster has enough units deployed
+        if self.config.get("cluster-count", 3) - 1 < \
+           len(self.cluster.relation.units):
+            all_u = len(self.cluster.relations.units) + 1
             logger.debug("Cluster.relation obj exists but "
                          "all_units return {}".format(all_u))
             self.model.unit.status = \
@@ -584,25 +673,33 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         # zookeeperAdmin.html#Quorum+TLS
         if self.config.get("sslQuorum", False) and \
            self.cluster.relations:
-            logger.debug("ssl_quorum and cluster set, "
-                         "write ssl_quorum configs")
-            zk_props["serverCnxnFactory"] = \
-                "org.apache.zookeeper.server.NettyServerCnxnFactory"
-            self.cluster.set_ssl_keypair(
-                self.get_quorum_cert(),
-                self.get_quorum_truststore(),
-                self.ks.ts_zookeeper_pwd,
-                user=self.config["user"],
-                group=self.config["group"],
-                mode=0o640)
-            zk_props["ssl.quorum.keyStore.location"] = \
-                self.get_quorum_keystore()
-            zk_props["ssl.quorum.keyStore.password"] = \
-                self.ks.ks_zookeeper_pwd
-            zk_props["ssl.quorum.trustStore.location"] = \
-                self.get_quorum_truststore()
-            zk_props["ssl.quorum.trustStore.password"] = \
-                self.ks.ts_zookeeper_pwd
+            try:
+                logger.debug("ssl_quorum and cluster set, "
+                             "write ssl_quorum configs")
+                self.cluster.set_ssl_keypair(
+                    self.get_quorum_cert(),
+                    self.get_quorum_truststore(),
+                    self.ks.ts_zookeeper_pwd,
+                    user=self.config["user"],
+                    group=self.config["group"],
+                    mode=0o640)
+                zk_props["serverCnxnFactory"] = \
+                    "org.apache.zookeeper.server.NettyServerCnxnFactory"
+                zk_props["ssl.quorum.keyStore.location"] = \
+                    self.get_quorum_keystore()
+                zk_props["ssl.quorum.keyStore.password"] = \
+                    self.ks.ks_zookeeper_pwd
+                zk_props["ssl.quorum.trustStore.location"] = \
+                    self.get_quorum_truststore()
+                zk_props["ssl.quorum.trustStore.password"] = \
+                    self.ks.ts_zookeeper_pwd
+            except KafkaRelationBaseTLSNotSetError:
+                # This can only happen if certificate relation is not ready.
+                # Otherwise, all units should eventually have the certs set.
+                # In this case, set_ssl_keypair is run right away and if it
+                # throws an exception, then the entire SSL configs will be
+                # skipped for now.
+                pass
 
         if self.cluster.relations:
             logger.info("Cluster relation stablished")
@@ -621,6 +718,13 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                })
 
     def _render_zk_log4j_properties(self):
+        """
+        Render log4j.properties file.
+
+        This method only needs one config: log4j-root-logger, which
+        defines the logging level in general.
+        """
+
         root_logger = self.config.get("log4j-root-logger", None) or \
             "INFO, stdout, zkAppender"
         self.model.unit.status = MaintenanceStatus("Rendering log4j...")
@@ -635,6 +739,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                })
 
     def _get_service_name(self):
+        """Override parent service name"""
+
         if self.distro == 'confluent':
             self.service = 'confluent-zookeeper'
         elif self.distro == "apache":
@@ -642,6 +748,18 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         return self.service
 
     def _on_config_changed(self, event):
+        """
+        Config change process
+        1) Check if Kerberos is enabled and all settings are present
+        1.1) Inform units of Kerberos
+        2) Generate Keystores
+        3) Render zookeeper.properties
+        3.1) Render log4j config
+        4) Render service ovverride file
+        5) Restart Strategy
+        6) Manage ports
+        """
+        # 1) Configure Kerberos
         try:
             if self.is_sasl_kerberos_enabled() and not self.keytab:
                 self.model.unit.status = \
@@ -656,36 +774,42 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.model.unit.status = \
                 BlockedStatus("Kerberos config missing: {}".format(str(e)))
             return
-
-        if not self._cert_relation_set(event):
-            return
         # Kerberos if needed correctly configured and certs are set:
         jaas_opts = super()._on_config_changed(event)
+        # 1.1) Inform units of zookeeper unit that Kerberos is enabled
+        if self.is_sasl_kerberos_enabled():
+            self.zk.enable_sasl_kerberos()
+        else:
+            self.zk.disable_sasl_kerberos()
 
+        # 2) Generate keystore files
         self.model.unit.status = \
             MaintenanceStatus("generate certs and keys if needed")
         logger.debug("Running _generate_keystores()")
-        self._generate_keystores()
+        # For now, if get_ssl_keystore returns empty, then SSL will be
+        # disabled across the application, including between cluster peers
+        if len(self.get_ssl_keystore()) > 0:
+            self._generate_keystores()
         self.model.unit.status = \
             MaintenanceStatus("Render zookeeper.properties")
 
+        # 3) Render zookeeper.properties
         logger.debug("Running render_zk_properties()")
         zk_opts = self._render_zk_properties()
         self.model.unit.status = MaintenanceStatus("Render log4j properties")
+        # 3.1) Generate log4j files
         logger.debug("Running log4j properties renderer")
         log4j_opts = self._render_zk_log4j_properties()
         self.model.unit.status = \
             MaintenanceStatus("Render service override conf file")
         logger.debug("Render override.conf")
+
+        # 4) Render the override.conf
         svc_opts = self.render_service_override_file(
             target="/etc/systemd/system/"
                    "{}.service.d/override.conf".format(self.service))
-        # Check if we need to enable SASL:
-        if self.is_sasl_kerberos_enabled():
-            self.zk.enable_sasl_kerberos()
-        else:
-            self.zk.disable_sasl_kerberos()
-        # Now, restart service
+
+        # Generate the context
         self.model.unit.status = \
             MaintenanceStatus("Building context...")
         ctx = {
@@ -698,28 +822,59 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         logger.debug("Context: {}, saved state is: {}".format(
             ctx, self.ks.config_state
         ))
+
+        # 5) Restart Strategy
+        if self.unit.is_leader():
+            # Now, we need to always handle the locks, even if acquire() was
+            # not called since _check_if_need_restart returned False.
+            # Therefore, we need to manually handle those locks.
+            # If _check_if_need_restart returns True, then the locks will be
+            # managed at the restart event and config-changed is closed with a
+            # return.
+            coordinator = OpsCoordinator()
+            coordinator.resume()
+            coordinator.release()
+
+        # 5.1) Check if called via InstallEvent
+        # Check if the unit has never been restarted (running InstallEvent).
+        # In these cases, there is no reason to
+        # request for the a restart to the cluster, instead simply restart.
+        # For the "failed" case, check if service-restart-failed is set
+        # if so, restart it.
+        if isinstance(event, InstallEvent):
+            for svc in self.services:
+                service_resume(svc)
+                service_restart(svc)
+            self.model.unit.status = \
+                ActiveStatus("Service is running")
+            return
+
+        # Now, restart service
+        self.model.unit.status = \
+            MaintenanceStatus("Building context...")
+        logger.debug("Context: {}, saved state is: {}".format(
+            ctx, self.ctx))
+
         if self._check_if_ready_to_start(ctx):
-            self.on.restart_event.emit(ctx, services=[self.service])
+            self.on.restart_event.emit(ctx, services=self.services)
+            self.ks.need_restart = True
             self.model.unit.status = \
                 BlockedStatus("Waiting for restart event")
-            # Finished all the tasks for the config changed.
-            # Return here.
             return
         elif service_running(self.service):
             self.model.unit.status = \
-                        ActiveStatus("Service is running")
+                ActiveStatus("Service is running")
         else:
             self.model.unit.status = \
                 BlockedStatus("Service not running that "
-                              "should be: {}".format(self.service))
-        # Now, we need to always handle the locks, even if acquire() was not
-        # called since _check_if_ready_to_start returned False.
-        # Therefore, we need to manually handle those locks.
-        # If _check_if_ready_to_start returns True, then the locks will be
-        # managed at the restart event and config-changed is closed with a
-        # return.
-        coordinator = OpsCoordinator()
-        coordinator.handle_locks(self.unit)
+                              "should be: {}".format(self.services))
+
+        # 6) Open ports
+        if self.ks.port != self.config.get("clientPort", 3888):
+            if self.ks.port > 0:
+                close_port(self.ks.port)
+            open_port(self.config.get("clientPort", 3888))
+            self.ks.port = self.config.get("clientPort", 3888)
 
 
 if __name__ == "__main__":
