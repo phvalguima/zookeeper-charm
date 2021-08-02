@@ -325,7 +325,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 self.certificates.get_chain()
             logger.debug("SSL Certificate chain"
                          " from tls-certificates: {}".format(c))
-        except TLSCertificateDataNotFoundInRelationError:
+        except (TLSCertificateDataNotFoundInRelationError,
+                TLSCertificateRelationNotPresentError):
             # Certificates not ready yet, return empty
             return ""
         return c
@@ -339,7 +340,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         try:
             certs = self.certificates.get_server_certs()
             k = certs[self.zk.binding_addr]["key"]
-        except TLSCertificateDataNotFoundInRelationError:
+        except (TLSCertificateDataNotFoundInRelationError,
+                TLSCertificateRelationNotPresentError):
             # Certificates not ready yet, return empty
             return ""
         return k
@@ -357,7 +359,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 self.certificates.get_chain()
             logger.debug("Quorum Certificate chain"
                          " from tls-certificates: {}".format(c))
-        except TLSCertificateDataNotFoundInRelationError:
+        except (TLSCertificateDataNotFoundInRelationError,
+                TLSCertificateRelationNotPresentError):
             # Certificates not ready yet, return empty
             return ""
         return c
@@ -372,7 +375,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         try:
             certs = self.certificates.get_server_certs()
             k = certs[self.cluster.binding_addr]["key"]
-        except TLSCertificateDataNotFoundInRelationError:
+        except (TLSCertificateDataNotFoundInRelationError,
+                TLSCertificateRelationNotPresentError):
             # Certificates not ready yet, return empty
             return ""
         return k
