@@ -45,7 +45,7 @@ To disable certificates, do the following steps:
 
 ### JMX Exporter support
 
-Kafka's JVM can export information to Prometheus. Setup the integration
+Zookeeper's JVM can export information to Prometheus. Setup the integration
 with the following options:
 
 ```
@@ -62,6 +62,10 @@ The setup above will render the option in override.conf service:
 ```
     -javaagent:/opt/prometheus/jmx_prometheus_javaagent.jar=9409:/opt/prometheus/prometheus.yml
 ```
+
+### Nagios Integration
+
+Set ```nagios_context``` config to allow NRPE integration to work. This option is used as a prefix for the check names and should change per environment.
 
 ### Authentication with Kerberos
 

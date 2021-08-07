@@ -123,12 +123,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 internal_endpoint=self.config.get(
                     "jmx_exporter_use_internal", False),
                 labels=self.config.get("jmx_exporter_labels", None))
-        self.framework.observe(
-            self.on.prometheus_manual_relation_joined,
-            self.prometheus.on_prometheus_relation_joined)
-        self.framework.observe(
-            self.on.prometheus_manual_relation_changed,
-            self.prometheus.on_prometheus_relation_changed)
         self.nrpe = KafkaJavaCharmBaseNRPEMonitoring(
             self,
             svcs=[self._get_service_name()],
@@ -550,6 +544,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             event.defer()
             self.model.unit.status = BlockedStatus(str(e))
         self._on_config_changed(event)
+        if len(self.prometheus.relations) > 0:
+            self.prometheus.on_prometheus_relation_changed(event)
 
     def _check_if_ready_to_start(self, ctx):
         if not self.cluster.is_ready:

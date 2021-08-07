@@ -254,12 +254,7 @@ options:
       syncLimit: 2
       autopurge.snapRetainCount: 10
       autopurge.purgeInterval: 1
-      admin.enableServer: false
-  jmx-exporter-port:
-    type: int
-    default: 8079
-    description: |
-      Path to expose prometheus metrics for scraping.      
+      admin.enableServer: false     
   jmx_exporter_version: 
     default: "0.12.0"
     type: string
@@ -287,3 +282,12 @@ options:
     description: |
       Use the internal or advertised address in the prometheus relation.
       If False, the advertised address will be used.   
+  nagios_context:
+    default: "juju"
+    type: string
+    description: |
+      Used by the nrpe subordinate charms. A string that will be prepended
+      to instance name to set the host name in nagios. So for instance the
+      hostname would be something like: juju-myservice-0 If you're running
+      multiple environments with the same services in them this allows you
+      to differentiate between them.
