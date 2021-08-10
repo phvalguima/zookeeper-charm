@@ -110,6 +110,7 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch.object(charm, "OpsCoordinator")
     @patch.object(cluster.ZookeeperCluster,
                   'binding_addr', new_callable=PropertyMock)
     @patch.object(cluster, 'get_hostname')
@@ -179,7 +180,8 @@ class TestCharm(unittest.TestCase):
                             mock_open,
                             mock_set_file_perms,
                             mock_get_hostname,
-                            mock_cluster_binding_addr):
+                            mock_cluster_binding_addr,
+                            mock_ops_coordinator):
         """
         Test config changed
 
@@ -302,6 +304,7 @@ class TestCharm(unittest.TestCase):
                     'server.2': 'ansiblezookeeper1.example.com:2888:3888'}}
             )
 
+    @patch.object(charm, "OpsCoordinator")
     @patch.object(ch_ip, 'apt_install')
     @patch.object(zkRelation.ZookeeperProvidesRelation, 'hostname',
                   new_callable=PropertyMock)
@@ -370,7 +373,8 @@ class TestCharm(unittest.TestCase):
                             mock_cluster_advertise_addr,
                             mock_zk_advertise_addr,
                             mock_zk_rel_hostname,
-                            mock_ch_ip_apt_install):
+                            mock_ch_ip_apt_install,
+                            mock_ops_coordinator):
         """
         Test config changed given certificates relation and cluster exists.
 
@@ -532,6 +536,7 @@ class TestCharm(unittest.TestCase):
                 }}
             )
 
+    @patch.object(charm, "OpsCoordinator")
     @patch.object(cluster.ZookeeperCluster,
                   'binding_addr', new_callable=PropertyMock)
     @patch.object(cluster, 'get_hostname')
@@ -601,7 +606,8 @@ class TestCharm(unittest.TestCase):
                             mock_open,
                             mock_set_file_perms,
                             mock_get_hostname,
-                            mock_cluster_binding_addr):
+                            mock_cluster_binding_addr,
+                            mock_ops_coordinator):
         # Avoid triggering the RestartEvent
         mock_service_running.return_value = False
         mock_check_if_ready_restart.return_value = False

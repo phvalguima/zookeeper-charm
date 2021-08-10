@@ -128,6 +128,14 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             svcs=[self._get_service_name()],
             endpoints=[],
             nrpe_relation_name='nrpe-external-master')
+        # Now, we need to always handle the locks
+        # This method is always called, therefore should be used to
+        # always manage the locks.
+        self.coordinator = OpsCoordinator()
+        self.coordinator.resume()
+
+    def __del__(self):
+        self.coordinator.release()
 
     def is_jmxexporter_enabled(self):
         if self.prometheus.relations:
@@ -135,9 +143,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         return False
 
     def on_update_status(self, event):
-        # Check if the locks must be handled or not
-        coordinator = OpsCoordinator()
-        coordinator.handle_locks(self.unit)
         super().on_update_status(event)
 
     @property
@@ -716,6 +721,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                context={
                    "zk_props": zk_props
                })
+        return zk_props
 
     def _render_zk_log4j_properties(self):
         """
@@ -737,6 +743,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                context={
                    "root_logger": root_logger
                })
+        return root_logger
 
     def _get_service_name(self):
         """Override parent service name"""
@@ -759,6 +766,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         5) Restart Strategy
         6) Manage ports
         """
+        logger.debug("config-changed called for event {}".format(event))
         # 1) Configure Kerberos
         try:
             if self.is_sasl_kerberos_enabled() and not self.keytab:
@@ -824,17 +832,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         ))
 
         # 5) Restart Strategy
-        if self.unit.is_leader():
-            # Now, we need to always handle the locks, even if acquire() was
-            # not called since _check_if_need_restart returned False.
-            # Therefore, we need to manually handle those locks.
-            # If _check_if_need_restart returns True, then the locks will be
-            # managed at the restart event and config-changed is closed with a
-            # return.
-            coordinator = OpsCoordinator()
-            coordinator.resume()
-            coordinator.release()
-
         # 5.1) Check if called via InstallEvent
         # Check if the unit has never been restarted (running InstallEvent).
         # In these cases, there is no reason to

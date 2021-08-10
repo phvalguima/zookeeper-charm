@@ -43,6 +43,7 @@ class TestCluster(unittest.TestCase):
     def setUp(self):
         super(TestCluster, self).setUp()
 
+    @patch.object(charm, "OpsCoordinator")
     @patch.object(kafka, "open_port")
     @patch.object(NRPEClient, "add_check")
     @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
@@ -64,7 +65,8 @@ class TestCluster(unittest.TestCase):
                                mock_prometheus_scrape_req,
                                mock_prometheus_advertise_addr,
                                mock_nrpe_add_check,
-                               mock_open_port):
+                               mock_open_port,
+                               mock_ops_coordinator):
         def __cleanup():
             for i in ["/tmp/testcert*", "/tmp/test-ts-quorum.jks"]:
                 try:
