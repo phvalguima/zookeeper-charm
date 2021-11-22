@@ -7,6 +7,8 @@ import logging
 import socket
 import yaml
 import json
+import os
+import shutil
 
 from ops.main import main
 from ops.charm import InstallEvent
@@ -115,6 +117,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.set_default(config_state="{}")
         self.ks.set_default(need_restart=False)
         self.ks.set_default(port=0)
+        self.ks.set_default(endpoints=[])
         # LMA integrations
         self.prometheus = \
             KafkaJavaCharmBasePrometheusMonitorNode(
@@ -154,6 +157,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.ks.ctx = json.dumps(c)
 
     def on_restart_event(self, event):
+        logger.debug("EVENT DEBUG: on_restart_event called")
         if not self.ks.need_restart:
             # There is a chance of several restart events being stacked.
             # This check ensures a single restart happens if several
@@ -168,18 +172,33 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             # requests for this unit anymore).
             # We can drop any other restart events that were stacked and
             # waiting for processing.
+            logger.debug("EVENT DEBUG: restart event abandoned,"
+                         " need_restart is unset")
             return
-        if event.restart():
-            # Restart was successful, if the charm is keeping track
-            # of a context, that is the place it should be updated
-            self.ks.config_state = event.ctx
-            # Toggle need_restart as we just did it.
-            self.ks.need_restart = False
-            self.model.unit.status = \
-                ActiveStatus("service running")
+        if event.restart(self.coordinator):
+            if self.check_ports_are_open(
+                    endpoints=self.ks.endpoints,
+                    retrials=3):
+                # Restart was successful, update need_restart and inform
+                # the clients via listener relation
+                self.model.unit.status = \
+                    ActiveStatus("service running")
+                # Restart was successful, if the charm is keeping track
+                # of a context, that is the place it should be updated
+                self.ks.config_state = event.ctx
+                # Toggle need_restart as we just did it.
+                self.ks.need_restart = False
+                logger.debug("EVENT DEBUG: restart event.restart() successful")
+                # Inform the clients on listener relation:
+                # self.coordinator.run_action()
+            else:
+                logger.warning("Failure at restart, operator should check")
+                self.model.unit.status = \
+                    BlockedStatus("Restart Failed, check service")
         else:
             # defer the RestartEvent as it is still waiting for the
             # lock to be released.
+            logger.debug("EVENT DEBUG: restart event.restart() failed, defer")
             event.defer()
 
     def on_upload_keytab_action(self, event):
@@ -470,18 +489,48 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 ks_regenerate=self.config.get(
                                   "regenerate-keystore-truststore", False))
 
+    @property
+    def snap(self):
+        """ Redefining snap name from kafka to zookeeper.
+        """
+        return "zookeeper"
+
     def _on_install(self, event):
         super()._on_install(event)
         self.model.unit.status = MaintenanceStatus("Starting installation")
         logger.info("Starting installation")
         packages = []
         # TODO(pguimares): implement install_tarball logic
-        # self._install_tarball()
-        if self.distro == "confluent":
-            packages = self.CONFLUENT_PACKAGES
+        if self.config.get("install_method") == "archive":
+            self._install_tarball()
+        elif self.distro == "confluent" or self.distro == "apache":
+            if self.distro == "confluent":
+                packages = self.CONFLUENT_PACKAGES
+            else:
+                raise Exception("Not Implemented Yet")
+        elif self.distro == "apache_snap":
+            self.JMX_EXPORTER_JAR_FOLDER = \
+                "/snap/zookeeper/current/jar/"
+
+        if self.distro == "apache_snap":
+            os.makedirs(
+                "/var/snap/zookeeper/common/logs/",
+                0o755, exist_ok=True)
+            shutil.chown("/var/snap/zookeeper/common/logs/",
+                         user=self.config["user"],
+                         group=self.config["group"])
         else:
-            raise Exception("Not Implemented Yet")
-        super().install_packages('openjdk-11-headless', packages)
+            os.makedirs(
+                "/var/log/zookeeper/",
+                0o755, exist_ok=True)
+            shutil.chown("/var/log/zookeeper/",
+                         user=self.config["user"],
+                         group=self.config["group"])
+
+        super().install_packages(
+            'openjdk-11-headless',
+            packages,
+            snap_connect=["proc-folder"]) # if snap is used, run connect
         # The logic below avoid an error such as more than one entry
         # In this case, we will pick the first entry
         data_log_fs = \
@@ -713,8 +762,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 zk_props["server.{}".format(k)] = v
         logger.info("Run options for zookeeper.properties")
         logger.debug("Options are: {}".format(",".join(zk_props)))
+        target = self.config["filepath-zookeeper-properties"]
         render(source="zookeeper.properties.j2",
-               target="/etc/kafka/zookeeper.properties",
+               target=target,
                owner=self.config.get('user'),
                group=self.config.get("group"),
                perms=0o640,
@@ -735,13 +785,20 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             "INFO, stdout, zkAppender"
         self.model.unit.status = MaintenanceStatus("Rendering log4j...")
         logger.debug("Rendering log4j")
+        target = self.config["filepath-zookeeper-log4j-properties"]
+        if self.distro == "apache_snap":
+            zk_logger_path = "/var/snap/zookeeper/common/logs/zookeeper-server.log"
+        else:
+            zk_logger_path = "/var/log/zookeeper/zookeeper-server.log"
+
         render(source="zookeeper_log4j.properties.j2",
-               target="/etc/kafka/zookeeper-log4j.properties",
+               target=target,
                owner=self.config.get('user'),
                group=self.config.get("group"),
                perms=0o640,
                context={
-                   "root_logger": root_logger
+                   "root_logger": root_logger,
+                   "zk_logger_path": zk_logger_path
                })
         return root_logger
 
@@ -752,6 +809,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.service = 'confluent-zookeeper'
         elif self.distro == "apache":
             self.service = "zookeeper"
+        elif self.distro == "apache_snap":
+            self.service = "snap.zookeeper.zookeeper"
         return self.service
 
     def _on_config_changed(self, event):
@@ -813,9 +872,20 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         logger.debug("Render override.conf")
 
         # 4) Render the override.conf
+        jmx_file_name = \
+            "/opt/prometheus/prometheus.yaml" if self.distro != "apache_snap" \
+            else "/var/snap/zookeeper/common/prometheus.yaml"
+        extra_envvars = None
+        if self.distro == "apache_snap":
+            extra_envvars = {
+                "ZOO_LOG_DIR": "/var/snap/zookeeper/common/logs",
+                "CLASSPATH": "/snap/zookeeper/current/zookeeper-server/*:/snap/zookeeper/current/bin/zookeeper-server/target/lib/*" # noqa
+            }
         svc_opts = self.render_service_override_file(
             target="/etc/systemd/system/"
-                   "{}.service.d/override.conf".format(self.service))
+                   "{}.service.d/override.conf".format(self.service),
+            jmx_file_name=jmx_file_name,
+            extra_envvars=extra_envvars)
 
         # Generate the context
         self.model.unit.status = \

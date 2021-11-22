@@ -2,9 +2,11 @@
 # See LICENSE file for licensing details.
 name: zookeeper
 description: |
-  TODO: fill out the charm's description
+  Zookeeper charm for both Confluent and Apache versions.
+  Apache zookeeper uses zookeeper snap.
 summary: |
-  TODO: fill out the charm's summary
+  Zookeeper charm for both Confluent and Apache versions.
+  Apache zookeeper uses zookeeper snap.
 series:
   - bionic
 subordinate: false
@@ -21,3 +23,8 @@ provides:
 requires:
   certificates:
     interface: tls-certificates
+resources:
+  zookeeper:
+    type: file
+    filename: zookeeper.snap
+    description: zookeeper snap

@@ -3,3 +3,5 @@ coverage
 flake8
 mock
 stestr>=2.2.0
+pytest
+pytest-operator

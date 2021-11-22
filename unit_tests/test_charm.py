@@ -110,6 +110,7 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
     @patch.object(cluster.ZookeeperCluster,
                   'binding_addr', new_callable=PropertyMock)
@@ -181,7 +182,8 @@ class TestCharm(unittest.TestCase):
                             mock_set_file_perms,
                             mock_get_hostname,
                             mock_cluster_binding_addr,
-                            mock_ops_coordinator):
+                            mock_ops_coordinator,
+                            mock_os_makedirs):
         """
         Test config changed
 
@@ -277,16 +279,18 @@ class TestCharm(unittest.TestCase):
                 'service_overrides': {'User': 'test', 'Group': 'test'},
                 'service_environment_overrides': {
                     'KAFKA_HEAP_OPTS': '-Xmx1g',
-                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:'
-                                        '/etc/kafka/zookeeper-log4j.'
-                                        'properties',
+                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:/etc/kafka/zookeeper-log4j.properties', # noqa
                     'LOG_DIR': '/var/log/kafka',
-                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}}
+                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'SCHEMA_REGISTRY_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048', # noqa
+                    'KSQL_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'KAFKAREST_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'CONTROL_CENTER_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}} # noqa
         )
         # Assert the zk properties was correctly rendered
         mock_render.assert_any_call(
             source='zookeeper.properties.j2',
-            target='/etc/kafka/zookeeper.properties',
+            target='/etc/zookeeper/zookeeper.properties',
             owner='test', group='test', perms=0o640,
             context={
                 'zk_props': {
@@ -299,11 +303,12 @@ class TestCharm(unittest.TestCase):
                     'dataDir': '/var/lib/zookeeper',
                     'dataLogDir': '/var/lib/kafka/zookeeper_log',
                     'ssl.clientAuth': 'none', 'clientPort': 2182,
-                    'server.3': 'ansiblezookeeper2.example.com:2888:3888',
+                    'server.2': 'ansiblezookeeper1.example.com:2888:3888',
                     'server.1': 'ansiblezookeeper0.example.com:2888:3888',
-                    'server.2': 'ansiblezookeeper1.example.com:2888:3888'}}
+                    'server.3': 'ansiblezookeeper2.example.com:2888:3888'}}
             )
 
+    @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
     @patch.object(ch_ip, 'apt_install')
     @patch.object(zkRelation.ZookeeperProvidesRelation, 'hostname',
@@ -374,7 +379,8 @@ class TestCharm(unittest.TestCase):
                             mock_zk_advertise_addr,
                             mock_zk_rel_hostname,
                             mock_ch_ip_apt_install,
-                            mock_ops_coordinator):
+                            mock_ops_coordinator,
+                            mock_os_makedirs):
         """
         Test config changed given certificates relation and cluster exists.
 
@@ -489,17 +495,19 @@ class TestCharm(unittest.TestCase):
                 'service_overrides': {'User': 'test', 'Group': 'test'},
                 'service_environment_overrides': {
                     'KAFKA_HEAP_OPTS': '-Xmx1g',
-                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:'
-                                        '/etc/kafka/zookeeper-log4j.'
-                                        'properties',
+                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:/etc/kafka/zookeeper-log4j.properties', # noqa
                     'LOG_DIR': '/var/log/kafka',
-                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}}
+                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'SCHEMA_REGISTRY_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048', # noqa
+                    'KSQL_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'KAFKAREST_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'CONTROL_CENTER_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}} # noqa
         )
         # Assert the Truststore creation
         # Assert the zk properties was correctly rendered
         mock_render.assert_any_call(
             source='zookeeper.properties.j2',
-            target='/etc/kafka/zookeeper.properties',
+            target='/etc/zookeeper/zookeeper.properties',
             owner='test', group='test', perms=0o640,
             context={
                 'zk_props': {
@@ -524,18 +532,17 @@ class TestCharm(unittest.TestCase):
                     'ssl.trustStore.password': 'aaaa',
                     'ssl.quorum.keyStore.location':
                     '/var/ssl/private/quorum-ks.jks',
-
                     'ssl.quorum.keyStore.password': 'aaaa',
                     'ssl.quorum.trustStore.location':
                     '/var/ssl/private/quorum-ts.jks',
-
                     'ssl.quorum.trustStore.password': 'aaaa',
-                    'server.2': 'ansiblezookeeper1.example.com:2888:3888',
                     'server.1': 'ansiblezookeeper0.example.com:2888:3888',
+                    'server.2': 'ansiblezookeeper1.example.com:2888:3888',
                     'server.3': 'ansiblezookeeper2.example.com:2888:3888'
                 }}
             )
 
+    @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
     @patch.object(cluster.ZookeeperCluster,
                   'binding_addr', new_callable=PropertyMock)
@@ -607,7 +614,8 @@ class TestCharm(unittest.TestCase):
                             mock_set_file_perms,
                             mock_get_hostname,
                             mock_cluster_binding_addr,
-                            mock_ops_coordinator):
+                            mock_ops_coordinator,
+                            mock_os_makedirs):
         # Avoid triggering the RestartEvent
         mock_service_running.return_value = False
         mock_check_if_ready_restart.return_value = False
@@ -696,16 +704,18 @@ class TestCharm(unittest.TestCase):
                 'service_overrides': {'User': 'test', 'Group': 'test'},
                 'service_environment_overrides': {
                     'KAFKA_HEAP_OPTS': '-Xmx1g',
-                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:'
-                                        '/etc/kafka/zookeeper-log4j.'
-                                        'properties',
+                    'KAFKA_LOG4J_OPTS': '-Dlog4j.configuration=file:/etc/kafka/zookeeper-log4j.properties', # noqa
                     'LOG_DIR': '/var/log/kafka',
-                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}}
+                    'KAFKA_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'SCHEMA_REGISTRY_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048', # noqa
+                    'KSQL_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'KAFKAREST_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048',
+                    'CONTROL_CENTER_OPTS': '-Djdk.tls.ephemeralDHKeySize=2048'}} # noqa
         )
         # Assert the zk properties was correctly rendered
         mock_render.assert_any_call(
             source='zookeeper.properties.j2',
-            target='/etc/kafka/zookeeper.properties',
+            target='/etc/zookeeper/zookeeper.properties',
             owner='test', group='test', perms=0o640,
             context={
                 'zk_props': {

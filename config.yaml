@@ -291,3 +291,15 @@ options:
       hostname would be something like: juju-myservice-0 If you're running
       multiple environments with the same services in them this allows you
       to differentiate between them.
+  filepath-zookeeper-properties:
+    default: "/etc/zookeeper/zookeeper.properties"
+    type: string
+    description: |
+      Path to zookeeper config files. If apache_snap is used instead,
+      choose: /var/snap/zookeeper/common/zookeeper.properties.
+  filepath-zookeeper-log4j-properties:
+    default: "/etc/kafka/zookeeper-log4j.properties"
+    type: string
+    description: |
+      Path to zookeeper log4j config files. If apache_snap is used instead,
+      choose: /var/snap/zookeeper/common/zookeeper_log4j.properties.
