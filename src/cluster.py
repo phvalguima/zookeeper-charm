@@ -1,10 +1,10 @@
 import os
 import json
 import logging
-from wand.contrib.linux import get_hostname
+from charms.kafka_broker.v0.kafka_linux import get_hostname
 
-from wand.apps.relations.kafka_relation_base import KafkaRelationBase
-from wand.security.ssl import setFilePermissions
+from charms.kafka_broker.v0.kafka_relation_base import KafkaRelationBase
+from charms.kafka_broker.v0.kafka_security import setFilePermissions
 
 logger = logging.getLogger(__name__)
 

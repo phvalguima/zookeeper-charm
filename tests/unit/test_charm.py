@@ -2,6 +2,7 @@
 # See LICENSE file for licensing details.
 
 import os
+import json
 import unittest
 from mock import patch, mock_open
 from mock import PropertyMock
@@ -9,22 +10,22 @@ from mock import PropertyMock
 from ops.testing import Harness
 import charm as charm
 import cluster as cluster
-import charmhelpers.fetch.ubuntu as ubuntu
+import charms.kafka_broker.v0.charmhelper as ubuntu
 
-import wand.apps.relations.zookeeper as zkRelation
-import wand.apps.kafka as kafka
-import wand.contrib.java as java
+import charms.zookeeper.v0.zookeeper as zkRelation
+import charms.kafka_broker.v0.kafka_base_class as kafka
+import charms.kafka_broker.v0.java_class as java
 from nrpe.client import NRPEClient
 
-import charmhelpers.contrib.network.ip as ch_ip
+import charms.kafka_broker.v0.charmhelper as ch_ip
 
-import wand.apps.relations.kafka_relation_base as kafka_relation_base
+import charms.kafka_broker.v0.kafka_relation_base as kafka_relation_base
+from charms.kafka_broker.v0.kafka_base_class import OVERRIDE_CONF
 
-from wand.apps.relations.tls_certificates import (
-    TLSCertificateRequiresRelation,
-)
+import interface_tls_certificates.ca_client as ca_client
 
-import wand.security.ssl as security
+import charms.kafka_broker.v0.kafka_security as security
+
 
 TO_PATCH_LINUX = [
     'userAdd',
@@ -110,6 +111,7 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch("shutil.chown")
     @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
     @patch.object(cluster.ZookeeperCluster,
@@ -140,17 +142,21 @@ class TestCharm(unittest.TestCase):
     @patch.object(java, "genRandomPassword")
     @patch.object(charm, "genRandomPassword")
     # Those two patches set _cert_relation_set + get_ssl* as empty
-    @patch.object(TLSCertificateRequiresRelation, "get_server_certs")
-    @patch.object(TLSCertificateRequiresRelation, "request_server_cert")
+    @patch.object(ca_client.CAClient, "_get_certs_and_keys")
+    @patch.object(ca_client.CAClient, "root_ca_chain", new_callable=PropertyMock)
+    @patch.object(ca_client.CAClient, "ca_certificate", new_callable=PropertyMock)
+    @patch.object(ca_client.CAClient, "request_server_certificate")
     @patch.object(charm, "PKCS12CreateKeystore")
     @patch.object(kafka.KafkaJavaCharmBase, "_on_install")
     @patch.object(charm.ZookeeperCharm, "create_data_and_log_dirs")
     @patch.object(kafka.KafkaJavaCharmBase, "install_packages")
     @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
     @patch.object(kafka, "render")
+    @patch.object(kafka, "render_from_string")
     @patch.object(charm, "render")
     def test_config_no_cert(self,
                             mock_render,
+                            mock_kafka_render_string,
                             mock_kafka_class_render,
                             mock_folders_perms,
                             mock_on_install_pkgs,
@@ -158,6 +164,8 @@ class TestCharm(unittest.TestCase):
                             mock_super_install,
                             mock_create_jks,
                             mock_request_server_cert,
+                            mock_ca_certificate,
+                            mock_root_ca_chain,
                             mock_get_server_certs,
                             mock_gen_random_pwd,
                             mock_java_gen_random_pwd,
@@ -183,7 +191,8 @@ class TestCharm(unittest.TestCase):
                             mock_get_hostname,
                             mock_cluster_binding_addr,
                             mock_ops_coordinator,
-                            mock_os_makedirs):
+                            mock_os_makedirs,
+                            mock_shutil_chown):
         """
         Test config changed
 
@@ -266,11 +275,11 @@ class TestCharm(unittest.TestCase):
             source='zookeeper_log4j.properties.j2',
             target='/etc/kafka/zookeeper-log4j.properties',
             owner='test', group='test', perms=0o640,
-            context={'root_logger': 'DEBUG, stdout, zkAppender'}
+            context={'root_logger': 'DEBUG, stdout, zkAppender', "zk_logger_path": '/var/log/zookeeper/zookeeper-server.log' }
         )
         # Assert the service override
-        mock_kafka_class_render.assert_any_call(
-            source='kafka_override.conf.j2',
+        mock_kafka_render_string.assert_any_call(
+            source=OVERRIDE_CONF,
             target='/etc/systemd/system/confluent-zookeeper.service.d/'
                    'override.conf',
             owner='test', group='test', perms=0o644,
@@ -308,6 +317,7 @@ class TestCharm(unittest.TestCase):
                     'server.3': 'ansiblezookeeper2.example.com:2888:3888'}}
             )
 
+    @patch("shutil.chown")
     @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
     @patch.object(ch_ip, 'apt_install')
@@ -347,9 +357,11 @@ class TestCharm(unittest.TestCase):
     @patch.object(kafka.KafkaJavaCharmBase, "install_packages")
     @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
     @patch.object(kafka, "render")
+    @patch.object(kafka, "render_from_string")
     @patch.object(charm, "render")
     def test_config_rel_crt(self,
                             mock_render,
+                            mock_kafka_render_string,
                             mock_kafka_class_render,
                             mock_folders_perms,
                             mock_on_install_pkgs,
@@ -380,7 +392,8 @@ class TestCharm(unittest.TestCase):
                             mock_zk_rel_hostname,
                             mock_ch_ip_apt_install,
                             mock_ops_coordinator,
-                            mock_os_makedirs):
+                            mock_os_makedirs,
+                            mock_shutil_chown):
         """
         Test config changed given certificates relation and cluster exists.
 
@@ -389,11 +402,13 @@ class TestCharm(unittest.TestCase):
         2) Certificates are generated and -changed event issued
         3) Cluster also formed
         4) Check if Truststore is correctly formed with cluster certs
+
+        Single binding set: 192.168.200.200
         """
         mock_zk_binding_addr.return_value = "192.168.200.200"
         mock_zk_advertise_addr.return_value = "192.168.200.200"
-        mock_cluster_binding_addr.return_value = "192.168.100.100"
-        mock_cluster_advertise_addr.return_value = "192.168.100.100"
+        mock_cluster_binding_addr.return_value = "192.168.200.200"
+        mock_cluster_advertise_addr.return_value = "192.168.200.200"
         # Avoid triggering the RestartEvent
         mock_service_running.return_value = False
         mock_check_if_ready_restart.return_value = False
@@ -442,12 +457,13 @@ class TestCharm(unittest.TestCase):
         certificate_id = harness.add_relation("certificates", "easyrsa")
         harness.add_relation_unit(certificate_id, "easyrsa/0")
         harness.update_relation_data(certificate_id, "easyrsa/0", {
+            "ca": certs[0]["crt"],
             "zookeeper_0.server.cert": certs[0]["crt"],
             "zookeeper_0.server.key": certs[0]["key"],
-            "zookeeper_0.processed_requests": {"192.168.200.200": {
-                "cert": certs[0]["crt"],
-                "key": certs[0]["key"]
-            }}
+            "zookeeper_0.processed_requests": json.dumps({"192.168.200.200": {
+                "cert": 'certs[0]["crt"]',
+                "key": 'certs[0]["key"]'
+            }})
         })
 
         # Complete the cluster
@@ -482,11 +498,11 @@ class TestCharm(unittest.TestCase):
             source='zookeeper_log4j.properties.j2',
             target='/etc/kafka/zookeeper-log4j.properties',
             owner='test', group='test', perms=0o640,
-            context={'root_logger': 'DEBUG, stdout, zkAppender'}
+            context={'root_logger': 'DEBUG, stdout, zkAppender', "zk_logger_path": '/var/log/zookeeper/zookeeper-server.log' }
         )
         # Assert the service override
-        mock_kafka_class_render.assert_any_call(
-            source='kafka_override.conf.j2',
+        mock_kafka_render_string.assert_any_call(
+            source=OVERRIDE_CONF,
             target='/etc/systemd/system/confluent-zookeeper.service.d/'
                    'override.conf',
             owner='test', group='test', perms=0o644,
@@ -542,6 +558,7 @@ class TestCharm(unittest.TestCase):
                 }}
             )
 
+    @patch("shutil.chown")
     @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
     @patch.object(cluster.ZookeeperCluster,
@@ -572,17 +589,21 @@ class TestCharm(unittest.TestCase):
     @patch.object(java, "genRandomPassword")
     @patch.object(charm, "genRandomPassword")
     # Those two patches set _cert_relation_set + get_ssl* as empty
-    @patch.object(TLSCertificateRequiresRelation, "get_server_certs")
-    @patch.object(TLSCertificateRequiresRelation, "request_server_cert")
+    @patch.object(ca_client.CAClient, "_get_certs_and_keys")
+    @patch.object(ca_client.CAClient, "root_ca_chain", new_callable=PropertyMock)
+    @patch.object(ca_client.CAClient, "ca_certificate", new_callable=PropertyMock)
+    @patch.object(ca_client.CAClient, "request_server_certificate")
     @patch.object(charm, "PKCS12CreateKeystore")
     @patch.object(kafka.KafkaJavaCharmBase, "_on_install")
     @patch.object(charm.ZookeeperCharm, "create_data_and_log_dirs")
     @patch.object(kafka.KafkaJavaCharmBase, "install_packages")
     @patch.object(charm.ZookeeperCharm, "set_folders_and_permissions")
     @patch.object(kafka, "render")
+    @patch.object(kafka, "render_from_string")
     @patch.object(charm, "render")
     def test_config_changed(self,
                             mock_render,
+                            mock_kafka_render_string,
                             mock_kafka_class_render,
                             mock_folders_perms,
                             mock_on_install_pkgs,
@@ -590,6 +611,8 @@ class TestCharm(unittest.TestCase):
                             mock_super_install,
                             mock_create_jks,
                             mock_request_server_cert,
+                            mock_ca_certificate,
+                            mock_root_ca_chain,
                             mock_get_server_certs,
                             mock_gen_random_pwd,
                             mock_java_gen_random_pwd,
@@ -615,7 +638,8 @@ class TestCharm(unittest.TestCase):
                             mock_get_hostname,
                             mock_cluster_binding_addr,
                             mock_ops_coordinator,
-                            mock_os_makedirs):
+                            mock_os_makedirs,
+                            mock_shutil_chown):
         # Avoid triggering the RestartEvent
         mock_service_running.return_value = False
         mock_check_if_ready_restart.return_value = False
@@ -691,11 +715,11 @@ class TestCharm(unittest.TestCase):
             source='zookeeper_log4j.properties.j2',
             target='/etc/kafka/zookeeper-log4j.properties',
             owner='test', group='test', perms=0o640,
-            context={'root_logger': 'DEBUG, stdout, zkAppender'}
+            context={'root_logger': 'DEBUG, stdout, zkAppender', "zk_logger_path": '/var/log/zookeeper/zookeeper-server.log' }
         )
         # Assert the service override
-        mock_kafka_class_render.assert_any_call(
-            source='kafka_override.conf.j2',
+        mock_kafka_render_string.assert_any_call(
+            source=OVERRIDE_CONF,
             target='/etc/systemd/system/confluent-zookeeper.service.d/'
                    'override.conf',
             owner='test', group='test', perms=0o644,

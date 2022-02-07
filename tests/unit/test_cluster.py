@@ -7,10 +7,10 @@ from ops.testing import Harness
 import charm as charm
 import cluster as cluster
 
-import wand.security.ssl as security
-from wand.security.ssl import genRandomPassword
+import charms.kafka_broker.v0.kafka_security as security
+from charms.kafka_broker.v0.kafka_security import genRandomPassword
 
-import wand.apps.kafka as kafka
+import charms.kafka_broker.v0.kafka_base_class as kafka
 from nrpe.client import NRPEClient
 
 

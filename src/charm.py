@@ -9,6 +9,7 @@ import yaml
 import json
 import os
 import shutil
+import cryptography.hazmat.primitives.serialization as serialization
 
 from ops.main import main
 from ops.charm import InstallEvent
@@ -18,44 +19,44 @@ from ops.model import (
     MaintenanceStatus
 )
 
-from charmhelpers.core.templating import render
-from charmhelpers.core.host import (
+from charms.operator_libs_linux.v1.systemd import (
     service_running,
     service_resume,
     service_restart
 )
-from charmhelpers.core.hookenv import (
+
+from charms.kafka_broker.v0.charmhelper import (
     open_port,
-    close_port
+    close_port,
+    render
 )
 
-from wand.apps.relations.tls_certificates import (
-    TLSCertificateRequiresRelation,
-    TLSCertificateDataNotFoundInRelationError,
-    TLSCertificateRelationNotPresentError
-)
-from wand.apps.kafka import (
+import interface_tls_certificates.ca_client as ca_client
+
+from charms.kafka_broker.v0.kafka_base_class import (
     KafkaJavaCharmBase,
     KafkaCharmBaseMissingConfigError,
     KafkaJavaCharmBaseNRPEMonitoring,
     KafkaJavaCharmBasePrometheusMonitorNode
 )
 from cluster import ZookeeperCluster
-from wand.apps.relations.zookeeper import (
+from charms.zookeeper.v0.zookeeper import (
     ZookeeperProvidesRelation
 )
-from wand.apps.relations.kafka_relation_base import (
+from charms.kafka_broker.v0.kafka_relation_base import (
     KafkaRelationBaseNotUsedError,
     KafkaRelationBaseTLSNotSetError
 )
-from wand.contrib.coordinator import (
+from ops_coordinator.ops_coordinator import (
     RestartCharmEvent,
     OpsCoordinator
 )
 
-from wand.security.ssl import PKCS12CreateKeystore
-from wand.security.ssl import genRandomPassword
-from wand.security.ssl import generateSelfSigned
+from charms.kafka_broker.v0.kafka_security import (
+    PKCS12CreateKeystore,
+    genRandomPassword,
+    generateSelfSigned
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
 
     def __init__(self, *args):
         super().__init__(*args)
+        self.certificates = ca_client.CAClient(
+            self,
+            'certificates')
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
         self.framework.observe(self.on.cluster_relation_joined,
@@ -87,9 +91,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                                self.on_zookeeper_relation_joined)
         self.framework.observe(self.on.zookeeper_relation_changed,
                                self.on_zookeeper_relation_changed)
-        self.framework.observe(self.on.certificates_relation_joined,
+        self.framework.observe(self.certificates.on.ca_available,
                                self.on_certificates_relation_joined)
-        self.framework.observe(self.on.certificates_relation_changed,
+        self.framework.observe(self.certificates.on.tls_server_config_ready,
                                self.on_certificates_relation_changed)
         self.framework.observe(self.on.update_status,
                                self.on_update_status)
@@ -106,8 +110,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.cluster = ZookeeperCluster(self, 'cluster',
                                         myidfolder or "/var/ssl/private",
                                         self.config.get("cluster-count", 3))
-        self.certificates = \
-            TLSCertificateRequiresRelation(self, 'certificates')
         self.ks.set_default(quorum_cert="")
         self.ks.set_default(quorum_key="")
         self.ks.set_default(ssl_cert="")
@@ -213,7 +215,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         event.set_results({"keytab": "Uploaded!"})
 
     def on_certificates_relation_joined(self, event):
-        self.certificates.on_tls_certificate_relation_joined(event)
         # Relation just joined, request certs for each of the relations
         # That will happen once. The certificates will be generated, then
         # it will trigger a -changed Event on certificates, which will
@@ -236,7 +237,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         config_changed logic is called once again to regenerate configs
         with new cert/key AND share those across the relations as needed
         """
-        self.certificates.on_tls_certificate_relation_changed(event)
         self._on_config_changed(event)
 
     def on_zookeeper_relation_joined(self, event):
@@ -269,135 +269,17 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.model.unit.status = BlockedStatus(str(e))
         self._on_config_changed(event)
 
-    def _cert_relation_set(self, event, rel=None):
-        # Will introduce this CN format later
-        def __get_cn():
-            return "*." + ".".join(socket.getfqdn().split(".")[1:])
-        # generate cert request if tls-certificates available
-        # rel may be set to None in cases such as config-changed
-        # or install events. In these cases, the goal is to run
-        # the validation at the end of this method
-        if rel:
-            if self.certificates.relation:
-                sans = [
-                    socket.gethostname(),
-                    socket.getfqdn()
-                ]
-                # We do not need to know if any relations exists but rather
-                # if binding/advertise addresses exists.
-                if rel.binding_addr:
-                    sans.append(rel.binding_addr)
-                if rel.advertise_addr:
-                    sans.append(rel.advertise_addr)
-                if rel.hostname:
-                    sans.append(rel.hostname)
-
-                # Common name is always CN as this is the element
-                # that organizes the cert order from tls-certificates
-                self.certificates.request_server_cert(
-                    cn=rel.binding_addr,
-                    sans=sans)
-            logger.info("Either certificates "
-                        "relation not ready or not set")
-        # This try/except will raise an exception if tls-certificate
-        # is set and there is no certificate available on the relation yet.
-        # That will also cause the
-        # event to be deferred, waiting for certificates relation to finish
-        # If tls-certificates is not set, then the try will run normally,
-        # either marking there is no certificate configuration set or
-        # concluding the method.
-        try:
-            if (not self.get_ssl_cert() or not self.get_ssl_key()):
-                self.model.unit.status = \
-                    BlockedStatus("Waiting for certificates "
-                                  "relation or option")
-                logger.info("Waiting for certificates relation "
-                            "to publish data")
-                return False
-        # These excepts will treat the case tls-certificates relation is used
-        # but the relation is not ready yet
-        # KeyError is also a possibility, if get_ssl_cert is called before any
-        # event that actually submits a request for a cert is done
-        except (TLSCertificateDataNotFoundInRelationError,
-                TLSCertificateRelationNotPresentError,
-                KeyError):
-            self.model.unit.status = \
-                BlockedStatus("There is no certificate option or "
-                              "relation set, waiting...")
-            logger.warning("There is no certificate option or "
-                           "relation set, waiting...")
-            if event:
-                event.defer()
-            return False
-        return True
-
     def get_ssl_cert(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.ssl_cert
-        if len(self.config.get("ssl_cert")) > 0 and \
-           len(self.config.get("ssl_key")) > 0:
-            return base64.b64decode(self.config["ssl_cert"]).decode("ascii")
-        try:
-            certs = self.certificates.get_server_certs()
-            c = certs[self.zk.binding_addr]["cert"] + \
-                self.certificates.get_chain()
-            logger.debug("SSL Certificate chain"
-                         " from tls-certificates: {}".format(c))
-        except (TLSCertificateDataNotFoundInRelationError,
-                TLSCertificateRelationNotPresentError):
-            # Certificates not ready yet, return empty
-            return ""
-        return c
+        return self._get_ssl_cert(self.zk.binding_addr)
 
     def get_ssl_key(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.ssl_key
-        if len(self.config.get("ssl_cert")) > 0 and \
-           len(self.config.get("ssl_key")) > 0:
-            return base64.b64decode(self.config["ssl_key"]).decode("ascii")
-        try:
-            certs = self.certificates.get_server_certs()
-            k = certs[self.zk.binding_addr]["key"]
-        except (TLSCertificateDataNotFoundInRelationError,
-                TLSCertificateRelationNotPresentError):
-            # Certificates not ready yet, return empty
-            return ""
-        return k
+        return self._get_ssl_key(self.zk.binding_addr)
 
     def get_quorum_cert(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.quorum_cert
-        if len(self.config.get("ssl-quorum-cert")) > 0 and \
-           len(self.config.get("ssl-quorum-key")) > 0:
-            return base64.b64decode(
-                self.config["ssl-quorum-cert"]).decode("ascii")
-        try:
-            certs = self.certificates.get_server_certs()
-            c = certs[self.cluster.binding_addr]["cert"] + \
-                self.certificates.get_chain()
-            logger.debug("Quorum Certificate chain"
-                         " from tls-certificates: {}".format(c))
-        except (TLSCertificateDataNotFoundInRelationError,
-                TLSCertificateRelationNotPresentError):
-            # Certificates not ready yet, return empty
-            return ""
-        return c
+        return self._get_ssl_cert(self.cluster.binding_addr, "ssl-quorum-cert", "ssl-quorum-key")
 
     def get_quorum_key(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.quorum_key
-        if len(self.config.get("ssl-quorum-cert")) > 0 and \
-           len(self.config.get("ssl-quorum-key")) > 0:
-            return base64.b64decode(
-                self.config["ssl-quorum-key"]).decode("ascii")
-        try:
-            certs = self.certificates.get_server_certs()
-            k = certs[self.cluster.binding_addr]["key"]
-        except (TLSCertificateDataNotFoundInRelationError,
-                TLSCertificateRelationNotPresentError):
-            # Certificates not ready yet, return empty
-            return ""
-        return k
+        return self._get_ssl_key(self.cluster.binding_addr, "ssl-quorum-cert", "ssl-quorum-key")
 
     def get_ssl_keystore(self):
         path = self.config.get("keystore-path", "")
