@@ -22,7 +22,8 @@ from ops.model import (
 from charms.operator_libs_linux.v1.systemd import (
     service_running,
     service_resume,
-    service_restart
+    service_restart,
+    SystemdError
 )
 
 from charms.kafka_broker.v0.charmhelper import (
@@ -177,31 +178,40 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             logger.debug("EVENT DEBUG: restart event abandoned,"
                          " need_restart is unset")
             return
-        if event.restart(self.coordinator):
-            if self.check_ports_are_open(
-                    endpoints=self.ks.endpoints,
-                    retrials=3):
-                # Restart was successful, update need_restart and inform
-                # the clients via listener relation
-                self.model.unit.status = \
-                    ActiveStatus("service running")
-                # Restart was successful, if the charm is keeping track
-                # of a context, that is the place it should be updated
-                self.ks.config_state = event.ctx
-                # Toggle need_restart as we just did it.
-                self.ks.need_restart = False
-                logger.debug("EVENT DEBUG: restart event.restart() successful")
-                # Inform the clients on listener relation:
-                # self.coordinator.run_action()
+        try:
+            if event.restart(self.coordinator):
+                if self.check_ports_are_open(
+                        endpoints=self.ks.endpoints,
+                        retrials=3):
+                    # Restart was successful, update need_restart and inform
+                    # the clients via listener relation
+                    self.model.unit.status = \
+                        ActiveStatus("service running")
+                    # Restart was successful, if the charm is keeping track
+                    # of a context, that is the place it should be updated
+                    self.ks.config_state = event.ctx
+                    # Toggle need_restart as we just did it.
+                    self.ks.need_restart = False
+                    logger.debug("EVENT DEBUG: restart event.restart() successful")
+                    # Inform the clients on listener relation:
+                    # self.coordinator.run_action()
+                else:
+                    logger.warning("Failure at restart, operator should check")
+                    self.model.unit.status = \
+                        BlockedStatus("Restart Failed, check service")
             else:
-                logger.warning("Failure at restart, operator should check")
-                self.model.unit.status = \
-                    BlockedStatus("Restart Failed, check service")
-        else:
-            # defer the RestartEvent as it is still waiting for the
-            # lock to be released.
-            logger.debug("EVENT DEBUG: restart event.restart() failed, defer")
-            event.defer()
+                # defer the RestartEvent as it is still waiting for the
+                # lock to be released.
+                logger.debug("EVENT DEBUG: restart event.restart() failed, defer")
+                event.defer()
+        # Not using SystemdError as it is not exposed
+        except Exception as e:
+        # except SystemdError:
+            logger.warning("Restart failed, blocking unit: {}".format(e))
+            self.model.unit.status = \
+                BlockedStatus("Restart Failed, check service")
+            # Ignore the next restarts
+            self.ks.need_restart = False
 
     def on_upload_keytab_action(self, event):
         try:

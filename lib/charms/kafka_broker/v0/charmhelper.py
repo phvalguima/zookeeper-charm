@@ -14,6 +14,7 @@ import pwd
 import grp
 import json
 import logging
+import ipaddress
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,41 @@ __all__ = [
     "add_source",
     "GPGKeyError"
 ]
+
+
+def ns_query(address):
+    try:
+        import dns.resolver
+    except ImportError:
+        apt_install('python3-dnspython', fatal=True)
+        import dns.resolver
+
+    if isinstance(address, dns.name.Name):
+        rtype = 'PTR'
+    elif isinstance(address, str):
+        rtype = 'A'
+    else:
+        return None
+
+    try:
+        answers = dns.resolver.query(address, rtype)
+    except dns.resolver.NXDOMAIN:
+        return None
+
+    if answers:
+        return str(answers[0])
+    return None
+
+def is_ip(address):
+    """
+    Returns True if address is a valid IP address.
+    """
+    try:
+        # Test to see if already an IPv4/IPv6 address
+        address = ipaddress.ip_address(address)
+        return True
+    except (ValueError):
+        return False
 
 
 def get_hostname(address, fqdn=True):
@@ -145,8 +181,7 @@ def _charmhelper_write_file(path, content, owner='root', group='root', perms=0o4
     except Exception:
         pass
     if content != existing_content:
-        logger.info("Writing file {} {}:{} {:o}".format(path, owner, group, perms),
-            level=DEBUG)
+        logger.debug("Writing file {} {}:{} {:o}".format(path, owner, group, perms))
         with open(path, 'wb') as target:
             os.fchown(target.fileno(), uid, gid)
             os.fchmod(target.fileno(), perms)
@@ -157,16 +192,16 @@ def _charmhelper_write_file(path, content, owner='root', group='root', perms=0o4
     # the contents were the same, but we might still need to change the
     # ownership or permissions.
     if existing_uid != uid:
-        logger.info("Changing uid on already existing content: {} -> {}"
-            .format(existing_uid, uid), level=DEBUG)
+        logger.debug("Changing uid on already existing content: {} -> {}"
+            .format(existing_uid, uid))
         os.chown(path, uid, -1)
     if existing_gid != gid:
-        logger.info("Changing gid on already existing content: {} -> {}"
-            .format(existing_gid, gid), level=DEBUG)
+        logger.debug("Changing gid on already existing content: {} -> {}"
+            .format(existing_gid, gid))
         os.chown(path, -1, gid)
     if existing_perms != perms:
-        logger.info("Changing permissions on existing content: {} -> {}"
-            .format(existing_perms, perms), level=DEBUG)
+        logger.debug("Changing permissions on existing content: {} -> {}"
+            .format(existing_perms, perms))
         os.chmod(path, perms)
 
 
@@ -492,10 +527,10 @@ def import_key(key):
         # Send everything not obviously a keyid to GPG to import, as
         # we trust its validation better than our own. eg. handling
         # comments before the key.
-        logger.info("PGP key found (looks like ASCII Armor format)", level=DEBUG)
+        logger.debug("PGP key found (looks like ASCII Armor format)")
         if ('-----BEGIN PGP PUBLIC KEY BLOCK-----' in key and
                 '-----END PGP PUBLIC KEY BLOCK-----' in key):
-            logger.info("Writing provided PGP key in the binary format", level=DEBUG)
+            logger.debug("Writing provided PGP key in the binary format")
             key_bytes = key.encode('utf-8')
             key_name = _get_keyid_by_gpg_key(key_bytes)
             key_gpg = _dearmor_gpg_key(key_bytes)
@@ -503,9 +538,9 @@ def import_key(key):
         else:
             raise GPGKeyError("ASCII armor markers missing from GPG key")
     else:
-        logger.info("PGP key found (looks like Radix64 format)", level=WARNING)
-        logger.info("SECURELY importing PGP key from keyserver; "
-            "full key not provided.", level=WARNING)
+        logger.warning("PGP key found (looks like Radix64 format)")
+        logger.warning("SECURELY importing PGP key from keyserver; "
+                       "full key not provided.")
         # as of bionic add-apt-repository uses curl with an HTTPS keyserver URL
         # to retrieve GPG keys. `apt-key adv` command is deprecated as is
         # apt-key in general as noted in its manpage. See lp:1433761 for more
