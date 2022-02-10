@@ -9,6 +9,7 @@ import yaml
 import json
 import os
 import shutil
+import hashlib
 import cryptography.hazmat.primitives.serialization as serialization
 
 from ops.main import main
@@ -23,6 +24,7 @@ from charms.operator_libs_linux.v1.systemd import (
     service_running,
     service_resume,
     service_restart,
+    daemon_reload,
     SystemdError
 )
 
@@ -151,6 +153,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
     def on_update_status(self, event):
         super().on_update_status(event)
 
+    """
     @property
     def ctx(self):
         return json.loads(self.ks.config_state)
@@ -158,7 +161,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
     @ctx.setter
     def ctx(self, c):
         self.ks.ctx = json.dumps(c)
-
+    """
     def on_restart_event(self, event):
         logger.debug("EVENT DEBUG: on_restart_event called")
         if not self.ks.need_restart:
@@ -187,9 +190,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                     # the clients via listener relation
                     self.model.unit.status = \
                         ActiveStatus("service running")
-                    # Restart was successful, if the charm is keeping track
-                    # of a context, that is the place it should be updated
-                    self.ks.config_state = event.ctx
                     # Toggle need_restart as we just did it.
                     self.ks.need_restart = False
                     logger.debug("EVENT DEBUG: restart event.restart() successful")
@@ -202,7 +202,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             else:
                 # defer the RestartEvent as it is still waiting for the
                 # lock to be released.
-                logger.debug("EVENT DEBUG: restart event.restart() failed, defer")
+                logger.info("Lock from event.restart() not acquired, defer")
                 event.defer()
         # Not using SystemdError as it is not exposed
         except Exception as e:
@@ -778,17 +778,29 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                    "{}.service.d/override.conf".format(self.service),
             jmx_file_name=jmx_file_name,
             extra_envvars=extra_envvars)
+        # Reload the systemd file
+        daemon_reload()
 
         # Generate the context
         self.model.unit.status = \
             MaintenanceStatus("Building context...")
-        ctx = {
+        ctx = hashlib.md5(json.dumps({
             "jaas_opts": jaas_opts,
             "zk_opts": zk_opts,
             "log4j_opts": log4j_opts,
             "svc_opts": svc_opts,
-            "keytab_opts": self.keytab_b64
-        }
+            "keytab_opts": self.keytab_b64,
+            "certificates": {
+                "ssl_crt": self.get_ssl_cert(),
+                "ssl_key": self.get_ssl_key(),
+                "ssl_ks": self.get_ssl_keystore(),
+                "ssl_ts": self.get_ssl_truststore(),
+                "quorum_crt": self.get_quorum_cert(),
+                "quorum_key": self.get_quorum_key(),
+                "quorum_ks": self.get_quorum_keystore(),
+                "quorum_ts": self.get_quorum_truststore(),
+            }
+        }).encode('utf-8')).hexdigest()
         logger.debug("Context: {}, saved state is: {}".format(
             ctx, self.ks.config_state
         ))
@@ -811,15 +823,12 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         # Now, restart service
         self.model.unit.status = \
             MaintenanceStatus("Building context...")
-        logger.debug("Context: {}, saved state is: {}".format(
-            ctx, self.ctx))
 
         if self._check_if_ready_to_start(ctx):
             self.on.restart_event.emit(ctx, services=self.services)
             self.ks.need_restart = True
             self.model.unit.status = \
                 BlockedStatus("Waiting for restart event")
-            return
         elif service_running(self.service):
             self.model.unit.status = \
                 ActiveStatus("Service is running")
@@ -827,6 +836,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
             self.model.unit.status = \
                 BlockedStatus("Service not running that "
                               "should be: {}".format(self.services))
+        self.ks.config_state = ctx
 
         # 6) Open ports
         if self.ks.port != self.config.get("clientPort", 3888):
