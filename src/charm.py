@@ -31,7 +31,8 @@ from charms.operator_libs_linux.v1.systemd import (
 from charms.kafka_broker.v0.charmhelper import (
     open_port,
     close_port,
-    render
+    render,
+    render_from_string
 )
 
 import interface_tls_certificates.ca_client as ca_client
@@ -40,7 +41,8 @@ from charms.kafka_broker.v0.kafka_base_class import (
     KafkaJavaCharmBase,
     KafkaCharmBaseMissingConfigError,
     KafkaJavaCharmBaseNRPEMonitoring,
-    KafkaJavaCharmBasePrometheusMonitorNode
+    KafkaJavaCharmBasePrometheusMonitorNode,
+    OVERRIDE_CONF
 )
 from cluster import ZookeeperCluster
 from charms.zookeeper.v0.zookeeper import (
@@ -145,6 +147,115 @@ class ZookeeperCharm(KafkaJavaCharmBase):
     def __del__(self):
         self.coordinator.release()
 
+    def render_service_override_file(
+            self, target,
+            jmx_jar_folder="/opt/prometheus/",
+            jmx_file_name="/opt/prometheus/prometheus.yaml",
+            extra_envvars=None):
+        """Renders the service override.conf file.
+
+        In the snap deployment, jmx will be placed on a /snap and
+        prometheus.yaml will be placed on /var/snap.
+
+        target: filepath for the override file
+        jmx_jar_folder: either /opt on confluent or /snap on apache_snap
+        jmx_file_name: either /opt on confluent or /var/snap for snap
+        extra_envvars: allows a charm to specify if any additional env
+                       vars should be added. This value will take priority
+                       over the config options and any configs set by this
+                       class.
+        """
+        if self.distro == "confluent":
+            return super().render_service_override_file(target, jmx_jar_folder, jmx_file_name, extra_envvars)
+
+        if self.distro != "apache_snap":
+            return
+
+        # Logic for Zookeeper snap
+        service_unit_overrides = yaml.safe_load(
+            self.config.get('service-unit-overrides', ""))
+        service_overrides = yaml.safe_load(
+            self.config.get('service-overrides', ""))
+        service_environment_overrides = yaml.safe_load(
+            self.config.get('service-environment-overrides', ""))
+
+        if "JVMFLAGS" not in service_environment_overrides:
+            service_environment_overrides["JVMFLAGS"] = ""
+        service_environment_overrides["ZOOBINDIR"] = "/bin"
+        service_environment_overrides["ZOOKEEPER_PREFIX"] = "/var/snap/zookeeper/common"
+        service_environment_overrides["ZOOCFGDIR"] = "/var/snap/zookeeper/common"
+        service_environment_overrides["ZOOCFG"] = "zookeeper.properties"
+        service_environment_overrides["ZOO_LOG4J_PROP"] = self.config["log4j-root-logger"]
+
+        jvmflags = []
+        if self.is_ssl_enabled():
+            jvmflags.append("-Djdk.tls.ephemeralDHKeySize=2048")
+        if self.is_sasl_enabled():
+            jvmflags.append(
+                "-Djava.security.auth.login.config="
+                "/etc/kafka/jaas.conf")
+        if self.is_jolokia_enabled():
+            jvmflags.append(
+                "-javaagent:/opt/jolokia/jolokia.jar="
+                "config=/etc/kafka/jolokia.properties")
+        if self.is_jmxexporter_enabled():
+            jvmflags.append(
+                "-javaagent:{}={}:{}"
+                .format(
+                    jmx_jar_folder + self.JMX_EXPORTER_JAR_NAME,
+                    self.config.get("jmx-exporter-port", 9404),
+                    jmx_file_name))
+            #service_environment_overrides["JMXLOCALONLY"] = "false"
+            #service_environment_overrides["JMXDISABLE"] = "false"
+            #service_environment_overrides["JMXPORT"] = self.config["jmx-exporter-port"]
+            #service_environment_overrides["JMXAUTH"] = "false"
+            #service_environment_overrides["JMXSSL"] = "false"
+            render(source="prometheus.yaml",
+                   target=jmx_file_name,
+                   owner=self.config.get('user'),
+                   group=self.config.get("group"),
+                   perms=0o644,
+                   context={})
+        if len(jvmflags) == 0:
+            # Assumed JVMFLAGS would be set at some point
+            # however, it was not, so removing it
+            service_environment_overrides.pop("JVMFLAGS", None)
+        else:
+            service_environment_overrides["JVMFLAGS"] = \
+                '{}'.format(" ".join(jvmflags))
+        if extra_envvars:
+            for k, v in extra_envvars.items():
+                service_environment_overrides[k] = v
+
+        # Even if service_overrides is not defined, User and Group need to be
+        # correctly set if this option was passed to the charm.
+        if not service_overrides:
+            service_overrides = {}
+        for d in ["User", "Group"]:
+            dlower = d.lower()
+            if dlower in self.config and \
+               len(self.config.get(dlower, "")) > 0:
+                service_overrides[d] = self.config.get(dlower)
+        self.set_folders_and_permissions([os.path.dirname(target)])
+        render_from_string(source=OVERRIDE_CONF,
+               target=target,
+               owner=self.config.get('user'),
+               group=self.config.get("group"),
+               perms=0o644,
+               context={
+                   "service_unit_overrides": service_unit_overrides or {},
+                   "service_overrides": service_overrides or {},
+                   "service_environment_overrides": service_environment_overrides or {} # noqa
+               })
+        # Shortening the name
+        svc_override = service_environment_overrides
+        return {
+            "service_unit_overrides": service_unit_overrides or {},
+            "service_overrides": service_overrides or {},
+            "service_environment_overrides": svc_override or {},
+            "is_jmx_exporter_enabled": self.is_jmxexporter_enabled()
+        }
+
     def is_jmxexporter_enabled(self):
         if self.prometheus.relations:
             return True
@@ -153,15 +264,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
     def on_update_status(self, event):
         super().on_update_status(event)
 
-    """
-    @property
-    def ctx(self):
-        return json.loads(self.ks.config_state)
-
-    @ctx.setter
-    def ctx(self, c):
-        self.ks.ctx = json.dumps(c)
-    """
     def on_restart_event(self, event):
         logger.debug("EVENT DEBUG: on_restart_event called")
         if not self.ks.need_restart:
@@ -409,6 +511,12 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 "/var/snap/zookeeper/common/logs/",
                 0o755, exist_ok=True)
             shutil.chown("/var/snap/zookeeper/common/logs/",
+                         user=self.config["user"],
+                         group=self.config["group"])
+            os.makedirs(
+                "/var/snap/zookeeper/common/conf/",
+                0o755, exist_ok=True)
+            shutil.chown("/var/snap/zookeeper/common/conf/",
                          user=self.config["user"],
                          group=self.config["group"])
         else:
@@ -776,6 +884,9 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         svc_opts = self.render_service_override_file(
             target="/etc/systemd/system/"
                    "{}.service.d/override.conf".format(self.service),
+            jmx_jar_folder = \
+                "/opt/prometheus/" if self.distro != "apache_snap" \
+                else "/snap/zookeeper/current/jar/",
             jmx_file_name=jmx_file_name,
             extra_envvars=extra_envvars)
         # Reload the systemd file

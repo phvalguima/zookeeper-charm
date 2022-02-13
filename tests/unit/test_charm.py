@@ -11,7 +11,6 @@ from ops.testing import Harness
 import charm as charm
 import cluster as cluster
 import charms.kafka_broker.v0.charmhelper as ubuntu
-
 import charms.zookeeper.v0.zookeeper as zkRelation
 import charms.kafka_broker.v0.kafka_base_class as kafka
 import charms.kafka_broker.v0.java_class as java
@@ -111,6 +110,7 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch.object(charm, "daemon_reload")
     @patch("shutil.chown")
     @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
@@ -192,7 +192,8 @@ class TestCharm(unittest.TestCase):
                             mock_cluster_binding_addr,
                             mock_ops_coordinator,
                             mock_os_makedirs,
-                            mock_shutil_chown):
+                            mock_shutil_chown,
+                            mock_systemd_daemon_reload):
         """
         Test config changed
 
@@ -317,6 +318,7 @@ class TestCharm(unittest.TestCase):
                     'server.3': 'ansiblezookeeper2.example.com:2888:3888'}}
             )
 
+    @patch.object(charm, "daemon_reload")
     @patch("shutil.chown")
     @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
@@ -393,7 +395,8 @@ class TestCharm(unittest.TestCase):
                             mock_ch_ip_apt_install,
                             mock_ops_coordinator,
                             mock_os_makedirs,
-                            mock_shutil_chown):
+                            mock_shutil_chown,
+                            mock_systemd_daemon_reload):
         """
         Test config changed given certificates relation and cluster exists.
 
@@ -558,6 +561,8 @@ class TestCharm(unittest.TestCase):
                 }}
             )
 
+
+    @patch.object(charm, "daemon_reload")
     @patch("shutil.chown")
     @patch("os.makedirs")
     @patch.object(charm, "OpsCoordinator")
@@ -639,7 +644,9 @@ class TestCharm(unittest.TestCase):
                             mock_cluster_binding_addr,
                             mock_ops_coordinator,
                             mock_os_makedirs,
-                            mock_shutil_chown):
+                            mock_shutil_chown,
+                            mock_systemd_daemon_reload):
+
         # Avoid triggering the RestartEvent
         mock_service_running.return_value = False
         mock_check_if_ready_restart.return_value = False
