@@ -9,6 +9,7 @@ summary: |
   Apache zookeeper uses zookeeper snap.
 series:
   - bionic
+  - focal
 subordinate: false
 peers:
   cluster:
