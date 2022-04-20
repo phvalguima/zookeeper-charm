@@ -63,6 +63,8 @@ from charms.kafka_broker.v0.kafka_security import (
     generateSelfSigned
 )
 
+from charms.kafka_broker.v0.kafka_linux import get_hostname
+
 logger = logging.getLogger(__name__)
 
 
@@ -382,16 +384,16 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def get_ssl_cert(self):
-        return self._get_ssl_cert(self.zk.binding_addr)
+        return self._get_ssl_cert(get_hostname(self.zk.binding_addr))
 
     def get_ssl_key(self):
-        return self._get_ssl_key(self.zk.binding_addr)
+        return self._get_ssl_key(get_hostname(self.zk.binding_addr))
 
     def get_quorum_cert(self):
-        return self._get_ssl_cert(self.cluster.binding_addr, "ssl-quorum-cert", "ssl-quorum-key")
+        return self._get_ssl_cert(get_hostname(self.cluster.binding_addr), "ssl-quorum-cert", "ssl-quorum-key")
 
     def get_quorum_key(self):
-        return self._get_ssl_key(self.cluster.binding_addr, "ssl-quorum-cert", "ssl-quorum-key")
+        return self._get_ssl_key(get_hostname(self.cluster.binding_addr), "ssl-quorum-cert", "ssl-quorum-key")
 
     def get_ssl_keystore(self):
         path = self.config.get("keystore-path", "")
