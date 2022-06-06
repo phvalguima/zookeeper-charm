@@ -30,8 +30,10 @@ __all__ = [
     "apt_update",
     "apt_install",
     "mount",
+    "umount",
     "add_source",
-    "GPGKeyError"
+    "GPGKeyError",
+    "get_address_in_network"
 ]
 
 
@@ -365,6 +367,9 @@ def fstab_add(dev, mp, fs, options=None):
     """Adds the given device entry to the /etc/fstab file"""
     return Fstab.add(dev, mp, fs, options=options)
 
+def fstab_remove(mp):
+    """Remove the given mountpoint entry from /etc/fstab"""
+    return Fstab.remove_by_mountpoint(mp)
 
 def mount(device, mountpoint, options=None, persist=False, filesystem="ext3"):
     """Mount a filesystem at a particular mountpoint"""
@@ -380,6 +385,18 @@ def mount(device, mountpoint, options=None, persist=False, filesystem="ext3"):
 
     if persist:
         return fstab_add(device, mountpoint, filesystem, options=options)
+    return True
+
+def umount(mountpoint, persist=False):
+    """Unmount a filesystem"""
+    cmd_args = ['umount', mountpoint]
+    try:
+        subprocess.check_output(cmd_args)
+    except subprocess.CalledProcessError as e:
+        return False
+
+    if persist:
+        return fstab_remove(mountpoint)
     return True
 
 
@@ -492,6 +509,51 @@ class Fstab(io.FileIO):
         return cls(path=path).add_entry(Fstab.Entry(device,
                                                     mountpoint, filesystem,
                                                     options=options))
+
+
+def get_address_in_network(network):
+    """Get an IPv4 or IPv6 address within the network from the host.
+    :param network (str): CIDR presentation format. For example,
+        '192.168.1.0/24'. Supports multiple networks as a space-delimited list.
+    """
+    import netifaces
+    import netaddr
+
+    def _validate_cidr(network):
+        try:
+            netaddr.IPNetwork(network)
+        except (netaddr.core.AddrFormatError, ValueError):
+            raise ValueError("Network (%s) is not in CIDR presentation format" %
+                             network)
+
+    if network is None or len(network) == 0:
+        return None
+
+    networks = network.split() or [network]
+    for network in networks:
+        _validate_cidr(network)
+        network = netaddr.IPNetwork(network)
+        for iface in netifaces.interfaces():
+            try:
+                addresses = netifaces.ifaddresses(iface)
+            except ValueError:
+                # If an instance was deleted between
+                # netifaces.interfaces() run and now, its interfaces are gone
+                continue
+            if network.version == 4 and netifaces.AF_INET in addresses:
+                for addr in addresses[netifaces.AF_INET]:
+                    cidr = netaddr.IPNetwork("%s/%s" % (addr['addr'],
+                                                        addr['netmask']))
+                    if cidr in network:
+                        return str(cidr.ip)
+
+            if network.version == 6 and netifaces.AF_INET6 in addresses:
+                for addr in addresses[netifaces.AF_INET6]:
+                    cidr = _get_ipv6_network_from_address(addr)
+                    if cidr and cidr in network:
+                        return str(cidr.ip)
+
+    return None
 
 
 ######################################

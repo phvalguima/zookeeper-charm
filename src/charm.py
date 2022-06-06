@@ -109,6 +109,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self.zk = ZookeeperProvidesRelation(self, 'zookeeper',
                                             port=self.config.get('clientPort',
                                                                  2182))
+        self.framework.observe(self.on.upgrade_action, self.do_upgrade)
+        self.framework.observe(self.on.upgrade_charm, self._on_config_changed)
         myidfolder = \
             list(yaml.safe_load(
                      self.config.get("data-dir", "")).items())[0][1]
@@ -143,6 +145,10 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         # always manage the locks.
         self.coordinator = OpsCoordinator()
         self.coordinator.resume()
+
+    def restart(self):
+        """Restarts the service."""
+        service_restart(self.service)
 
     def __del__(self):
         self.coordinator.release()
@@ -527,12 +533,15 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                          user=self.config["user"],
                          group=self.config["group"])
 
+        # if snap is used, run connect
+        # The logic below avoid an error such as more than one entry
+        # In this case, we will pick the first entry
+        # Masking the kafka service for snap as well
         super().install_packages(
             'openjdk-11-headless',
             packages,
-            snap_connect=["proc-folder"]) # if snap is used, run connect
-        # The logic below avoid an error such as more than one entry
-        # In this case, we will pick the first entry
+            snap_connect=["proc-folder"],
+            masked_services=["snap.kafka.kafka"])
         data_log_fs = \
             list(yaml.safe_load(
                      self.config.get("data-log-dir", "")).items())[0][0]

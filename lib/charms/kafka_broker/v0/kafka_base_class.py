@@ -120,6 +120,8 @@ from charms.kafka_broker.v0.charmhelper import (
     open_port
 )
 
+from charms.kafka_broker.v0.kafka_storage_manager import StorageManager, StorageManagerError
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -182,6 +184,19 @@ KRB5_CONF = """[libdefaults]
 [domain_realm]
  .{{ realm|lower() }} = {{ realm|upper() }}
   {{ realm|lower() }} = {{ realm|upper() }}""" # noqa
+
+
+def calculate_resource_checksum(resource):
+    """Calculates a checksum for a resource"""
+    import hashlib
+
+    md5 = hashlib.md5()
+    path = hookenv.resource_get(resource)
+    if path:
+        with open(path, "rb") as f:
+            data = f.read()
+        md5.update(data)
+    return md5.hexdigest()
 
 
 class KafkaJavaCharmBasePrometheusMonitorNode(BasePrometheusMonitor):
@@ -284,7 +299,7 @@ class KafkaJavaCharmBaseNRPEMonitoring(Object):
 
     def __init__(self, charm, svcs=[], endpoints=[],
                  nrpe_relation_name='nrpe-external-master'):
-        """Intialize with the list of services and ports to be monitored.
+        """Initialize with the list of services and ports to be monitored.
 
         Args:
             svcs: list -> list of service names to be monitored by NRPE
@@ -413,6 +428,16 @@ class KafkaJavaCharmBase(JavaCharmBase):
         """
         return self.config.get("distro", "confluent").lower()
 
+    def restart(self):
+        """Restarts the services. Should be defined by the final classes"""
+        pass
+
+    def do_upgrade(self, event):
+        """Runs the upgrade action by rerunning installation"""
+        self._on_install(event)
+        self._on_config_changed(event)
+        self.restart()
+
     def _get_service_name(self):
         """To be overloaded: returns the name of the Kafka service this
         charm must look after.
@@ -432,12 +457,42 @@ class KafkaJavaCharmBase(JavaCharmBase):
         self.get_ssl_methods_list = []
         self._kerberos_principal = None
         self.ks.set_default(keytab="")
+        self.ks.set_default(ssl_certs=[])
         self._sasl_protocol = None
         # Save the internal content of keytab file from the action.
         # use it as part of the context in the config_changed
         self.keytab_b64 = ""
         self.services = [self.service]
         self.JMX_EXPORTER_JAR_FOLDER = "/opt/prometheus/"
+        # Initiates the StorageManager
+        self.sm = StorageManager(self)
+        # Set the user and group if available as configs
+        if "user" in self.config:
+            self.sm.set_default_user(self.config["user"], mandatory=True)
+        if "group" in self.config:
+            self.sm.set_default_group(self.config["group"], mandatory=True)
+
+    def manage_volumes(self):
+        """Mounts / umounts volumes according to config option: log-dir.
+
+        If log-dir is not present in self.config, log a warning and return.
+        """        
+        if "log-dir" not in self.config:
+            logger.warn(
+                "log-dir config not found, manage_volumes returning,"
+                " nothing done")
+            return
+        logdir = self.config.get("log-dir", [])
+        if isinstance(logdir, str):
+            logdir = yaml.safe_load(self.config.get("log-dir", '[]'))
+        if isinstance(logdir, dict):
+            # If this is just
+            logdir = [logdir]
+        try:
+            self.sm.manage_volumes(logdir)
+        except StorageManagerError as e:
+            # Error happened when mounting a volume, mount it as a charm:
+            raise KafkaCharmBaseConfigNotAcceptedError(e.msg)
 
     def on_update_status(self, event):
         """ This method will update the status of the charm according
@@ -521,27 +576,43 @@ class KafkaJavaCharmBase(JavaCharmBase):
     def sasl_protocol(self, s):
         self._sasl_protocol = s
 
-    def add_certificate_action(self, certs):
+    def _recover_certificates_from_file(self, cert_files):
+        """Implements a helper method for the certificate actions.
+
+        Recovers all the certs from cert_files."""
+        certs = []
+        for crt in cert_files if isinstance(cert_files,list) else [cert_files]:
+            with open(crt) as f:
+                certs.append("".join(f.readlines()))
+        return certs
+
+    def add_certificates_action(self, cert_files):
         """Adds certificates to self.ks.ssl_certs. This list should be
         used to add custom certificates the entire stack needs to trust.
 
         Args:
-        - certs: multi-line string containing certs in the format:
-        ------ BEGIN CERTIFICATE -------
-        <data>
-        ------ END CERTIFICATE -------
-        ------ BEGIN CERTIFICATE .......
-        <data>
-        ...
+        - certs_files: list of certificate files to add.
         """
-        self.ks.ssl_certs.extend([
-            "-----BEGIN CERTIFICATE-----\n" + c for c in certs.split(
-                "-----BEGIN CERTIFICATE-----\n")])
+        certs = self._recover_certificates_from_file(cert_files)
+        if len(certs) == 0:
+            # No new cert to add
+            return
+        to_add = [c for c in certs if c not in self.ks.ssl_certs]
+        self.ks.ssl_certs.extend(to_add)
+        return self.ks.ssl_certs
 
-    def override_certificate_action(self):
+    def list_certificates_action(self):
+        """Returns the list of certs added to the keystore."""
+        return self.ks.ssl_certs
+
+    def remove_certificates_action(self, cert_files):
         """Empties out all the certs passed via action"""
-
-        self.ks.ss_certs = []
+        certs = self._recover_certificates_from_file(cert_files)
+        if len(certs) == 0:
+            # No new cert to add
+            return
+        new_ssl_certs = [c for c in self.ks.ssl_certs if c not in certs]
+        self.ks.ssl_certs = new_ssl_certs
 
     def _upload_keytab_base64(self, k, filename="kafka.keytab"):
         """Receives the keytab in base64 format and saves to correct file"""
@@ -598,7 +669,7 @@ class KafkaJavaCharmBase(JavaCharmBase):
         """
         return "kafka"
 
-    def install_packages(self, java_version, packages, snap_connect=None):
+    def install_packages(self, java_version, packages, snap_connect=None, masked_services=None):
         """Install the packages/snaps related to the chosen distro.
 
         Args:
@@ -606,7 +677,12 @@ class KafkaJavaCharmBase(JavaCharmBase):
         packages: package list to be installed
         snap_connect: interfaces that need to be explicitly connected if snap
                       option is chosen instead.
+        masked_services: list of service names to be masked before installing the packages.
+                         This is useful for snaps, where several services are installed at once
         """
+
+        for s in (masked_services or []):
+            subprocess.check_output(["sudo", "systemctl", "mask", s])
 
         MaintenanceStatus("Installing packages")
         version = self.config.get("version", self.LATEST_VERSION_CONFLUENT)
@@ -845,7 +921,7 @@ class KafkaJavaCharmBase(JavaCharmBase):
                 # Common name is always CN as this is the element
                 # that organizes the cert order from tls-certificates
                 self.certificates.request_server_certificate(
-                    common_name=rel.binding_addr,
+                    common_name=rel.hostname,
                     sans=sans)
             logger.info("Either certificates "
                         "relation not ready or not set")

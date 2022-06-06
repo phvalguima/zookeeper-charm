@@ -11,4 +11,8 @@ upload-keytab:
         type: string
         description: base64-encoded of keytab file content
     required: [keytab]
-
+upgrade:
+    description: | 
+      Upgrade the kafka packages or snaps.
+      When executed, this action will, potentially, remove old packages/snaps and install the new
+      version, then executing a config-changed.
