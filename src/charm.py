@@ -821,7 +821,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         elif self.distro == "apache":
             self.service = "zookeeper"
         elif self.distro == "apache_snap":
-            self.service = "snap.zookeeper.zookeeper"
+            self.service = "snap.kafka.zookeeper"
         return self.service
 
     def _on_config_changed(self, event):

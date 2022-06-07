@@ -682,7 +682,9 @@ class KafkaJavaCharmBase(JavaCharmBase):
         """
 
         for s in (masked_services or []):
-            subprocess.check_output(["sudo", "systemctl", "mask", s])
+            if subprocess.Popen(["sudo", "systemctl", "is-enabled", s],
+                    stdout=subprocess.PIPE).communicate()[0].decode("utf-8") not in "disabled\n":
+              subprocess.check_output(["sudo", "systemctl", "mask", s])
 
         MaintenanceStatus("Installing packages")
         version = self.config.get("version", self.LATEST_VERSION_CONFLUENT)
@@ -720,20 +722,20 @@ class KafkaJavaCharmBase(JavaCharmBase):
                 # Resource was not found, try install from upstream
                 try:
                     subprocess.check_output(
-                        ["snap", "install", self.snap,
+                        ["snap", "install", "kafka",
                          "--channel={}".format(version)])
                 except subprocess.CalledProcessError as e:
                     raise KafkaCharmBaseFailedInstallation(
                         error=str(e))
-            try:
-                if snap_connect:
-                    for conn in snap_connect:
-                        subprocess.check_output(
-                            ["snap", "connect",
-                             "{}:{}".format(self.snap, conn)])
-            except subprocess.CalledProcessError as e:
-                raise KafkaCharmBaseFailedInstallation(
-                    error=str(e))
+            #try:
+            #    if snap_connect:
+            #        for conn in snap_connect:
+            #            subprocess.check_output(
+            #                ["snap", "connect",
+            #                 "{}:{}".format(self.snap, conn)])
+            #except subprocess.CalledProcessError as e:
+            #    raise KafkaCharmBaseFailedInstallation(
+            #        error=str(e))
             # Install openjdk for keytool
             super().install_packages(java_version, packages=[])
             # Packages will be already in place for snap
