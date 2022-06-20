@@ -25,7 +25,7 @@ requires:
   certificates:
     interface: tls-certificates
 resources:
-  zookeeper:
+  kafka:
     type: file
     filename: zookeeper.snap
-    description: zookeeper snap
+    description: kafka snap containing zookeeper process

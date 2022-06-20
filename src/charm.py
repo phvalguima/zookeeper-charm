@@ -12,6 +12,8 @@ import shutil
 import hashlib
 import cryptography.hazmat.primitives.serialization as serialization
 
+from charms.kafka_broker.v0.kafka_linux import get_hostname
+
 from ops.main import main
 from ops.charm import InstallEvent
 from ops.model import (
@@ -188,8 +190,8 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         if "JVMFLAGS" not in service_environment_overrides:
             service_environment_overrides["JVMFLAGS"] = ""
         service_environment_overrides["ZOOBINDIR"] = "/bin"
-        service_environment_overrides["ZOOKEEPER_PREFIX"] = "/var/snap/zookeeper/common"
-        service_environment_overrides["ZOOCFGDIR"] = "/var/snap/zookeeper/common"
+        service_environment_overrides["ZOOKEEPER_PREFIX"] = "/var/snap/kafka/common"
+        service_environment_overrides["ZOOCFGDIR"] = "/var/snap/kafka/common"
         service_environment_overrides["ZOOCFG"] = "zookeeper.properties"
         service_environment_overrides["ZOO_LOG4J_PROP"] = self.config["log4j-root-logger"]
 
@@ -388,16 +390,16 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def get_ssl_cert(self):
-        return self._get_ssl_cert(self.zk.binding_addr)
+        return self._get_ssl_cert(get_hostname(self.zk.binding_addr))
 
     def get_ssl_key(self):
-        return self._get_ssl_key(self.zk.binding_addr)
+        return self._get_ssl_key(get_hostname(self.zk.binding_addr))
 
     def get_quorum_cert(self):
-        return self._get_ssl_cert(self.cluster.binding_addr, "ssl-quorum-cert", "ssl-quorum-key")
+        return self._get_ssl_cert(get_hostname(self.cluster.binding_addr), "ssl-quorum-cert", "ssl-quorum-key")
 
     def get_quorum_key(self):
-        return self._get_ssl_key(self.cluster.binding_addr, "ssl-quorum-cert", "ssl-quorum-key")
+        return self._get_ssl_key(get_hostname(self.cluster.binding_addr), "ssl-quorum-cert", "ssl-quorum-key")
 
     def get_ssl_keystore(self):
         path = self.config.get("keystore-path", "")
@@ -493,7 +495,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
     def snap(self):
         """ Redefining snap name from kafka to zookeeper.
         """
-        return "zookeeper"
+        return "kafka"
 
     def _on_install(self, event):
         super()._on_install(event)
@@ -510,19 +512,19 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                 raise Exception("Not Implemented Yet")
         elif self.distro == "apache_snap":
             self.JMX_EXPORTER_JAR_FOLDER = \
-                "/snap/zookeeper/current/jar/"
+                "/snap/{}/current/jar/".format(self.snap)
 
         if self.distro == "apache_snap":
             os.makedirs(
-                "/var/snap/zookeeper/common/logs/",
+                "/var/snap/kafka/common/logs/",
                 0o755, exist_ok=True)
-            shutil.chown("/var/snap/zookeeper/common/logs/",
+            shutil.chown("/var/snap/kafka/common/logs/",
                          user=self.config["user"],
                          group=self.config["group"])
             os.makedirs(
-                "/var/snap/zookeeper/common/conf/",
+                "/var/snap/kafka/common/conf/",
                 0o755, exist_ok=True)
-            shutil.chown("/var/snap/zookeeper/common/conf/",
+            shutil.chown("/var/snap/kafka/common/conf/",
                          user=self.config["user"],
                          group=self.config["group"])
         else:
@@ -796,7 +798,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         logger.debug("Rendering log4j")
         target = self.config["filepath-zookeeper-log4j-properties"]
         if self.distro == "apache_snap":
-            zk_logger_path = "/var/snap/zookeeper/common/logs/zookeeper-server.log"
+            zk_logger_path = "/var/snap/kafka/common/logs/zookeeper-server.log"
         else:
             zk_logger_path = "/var/log/zookeeper/zookeeper-server.log"
 
@@ -819,7 +821,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         elif self.distro == "apache":
             self.service = "zookeeper"
         elif self.distro == "apache_snap":
-            self.service = "snap.zookeeper.zookeeper"
+            self.service = "snap.kafka.zookeeper"
         return self.service
 
     def _on_config_changed(self, event):
@@ -883,19 +885,19 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         # 4) Render the override.conf
         jmx_file_name = \
             "/opt/prometheus/prometheus.yaml" if self.distro != "apache_snap" \
-            else "/var/snap/zookeeper/common/prometheus.yaml"
+            else "/var/snap/kafka/common/prometheus.yaml"
         extra_envvars = None
         if self.distro == "apache_snap":
             extra_envvars = {
-                "ZOO_LOG_DIR": "/var/snap/zookeeper/common/logs",
-                "CLASSPATH": "/snap/zookeeper/current/zookeeper-server/*:/snap/zookeeper/current/bin/zookeeper-server/target/lib/*" # noqa
+                "ZOO_LOG_DIR": "/var/snap/kafka/common/logs" # ,
+#                "CLASSPATH": "/snap/{}/current/zookeeper-server/*:/snap/{}/current/bin/zookeeper-server/target/lib/*".format(self.snap, self.snap) # noqa
             }
         svc_opts = self.render_service_override_file(
             target="/etc/systemd/system/"
                    "{}.service.d/override.conf".format(self.service),
             jmx_jar_folder = \
                 "/opt/prometheus/" if self.distro != "apache_snap" \
-                else "/snap/zookeeper/current/jar/",
+                else "/snap/{}/current/jar/opt/kafka/extra/".format(self.snap),
             jmx_file_name=jmx_file_name,
             extra_envvars=extra_envvars)
         # Reload the systemd file
