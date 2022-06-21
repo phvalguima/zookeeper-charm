@@ -187,27 +187,27 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         service_environment_overrides = yaml.safe_load(
             self.config.get('service-environment-overrides', ""))
 
-        if "JVMFLAGS" not in service_environment_overrides:
-            service_environment_overrides["JVMFLAGS"] = ""
+        if "KAFKA_OPTS" not in service_environment_overrides:
+            service_environment_overrides["KAFKA_OPTS"] = ""
         service_environment_overrides["ZOOBINDIR"] = "/bin"
         service_environment_overrides["ZOOKEEPER_PREFIX"] = "/var/snap/kafka/common"
         service_environment_overrides["ZOOCFGDIR"] = "/var/snap/kafka/common"
         service_environment_overrides["ZOOCFG"] = "zookeeper.properties"
         service_environment_overrides["ZOO_LOG4J_PROP"] = self.config["log4j-root-logger"]
 
-        jvmflags = []
+        kafka_opts = []
         if self.is_ssl_enabled():
-            jvmflags.append("-Djdk.tls.ephemeralDHKeySize=2048")
+            kafka_opts.append("-Djdk.tls.ephemeralDHKeySize=2048")
         if self.is_sasl_enabled():
-            jvmflags.append(
+            kafka_opts.append(
                 "-Djava.security.auth.login.config="
                 "/etc/kafka/jaas.conf")
         if self.is_jolokia_enabled():
-            jvmflags.append(
+            kafka_opts.append(
                 "-javaagent:/opt/jolokia/jolokia.jar="
                 "config=/etc/kafka/jolokia.properties")
         if self.is_jmxexporter_enabled():
-            jvmflags.append(
+            kafka_opts.append(
                 "-javaagent:{}={}:{}"
                 .format(
                     jmx_jar_folder + self.JMX_EXPORTER_JAR_NAME,
@@ -224,13 +224,13 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                    group=self.config.get("group"),
                    perms=0o644,
                    context={})
-        if len(jvmflags) == 0:
-            # Assumed JVMFLAGS would be set at some point
+        if len(kafka_opts) == 0:
+            # Assumed KAFKA_OPTS would be set at some point
             # however, it was not, so removing it
-            service_environment_overrides.pop("JVMFLAGS", None)
+            service_environment_overrides.pop("KAFKA_OPTS", None)
         else:
-            service_environment_overrides["JVMFLAGS"] = \
-                '{}'.format(" ".join(jvmflags))
+            service_environment_overrides["KAFKA_OPTS"] = \
+                '{}'.format(" ".join(kafka_opts))
         if extra_envvars:
             for k, v in extra_envvars.items():
                 service_environment_overrides[k] = v
@@ -542,7 +542,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         super().install_packages(
             'openjdk-11-headless',
             packages,
-            snap_connect=["proc-folder"],
+            snap_connect=["mount-observe"],
             masked_services=["snap.kafka.kafka"])
         data_log_fs = \
             list(yaml.safe_load(
@@ -897,7 +897,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                    "{}.service.d/override.conf".format(self.service),
             jmx_jar_folder = \
                 "/opt/prometheus/" if self.distro != "apache_snap" \
-                else "/snap/{}/current/jar/opt/kafka/extra/".format(self.snap),
+                else "/snap/{}/current/opt/kafka/libs/".format(self.snap),
             jmx_file_name=jmx_file_name,
             extra_envvars=extra_envvars)
         # Reload the systemd file
