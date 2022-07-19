@@ -542,7 +542,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         super().install_packages(
             'openjdk-11-headless',
             packages,
-            snap_connect=["mount-observe"],
             masked_services=["snap.kafka.kafka"])
         data_log_fs = \
             list(yaml.safe_load(
@@ -897,7 +896,7 @@ class ZookeeperCharm(KafkaJavaCharmBase):
                    "{}.service.d/override.conf".format(self.service),
             jmx_jar_folder = \
                 "/opt/prometheus/" if self.distro != "apache_snap" \
-                else "/snap/{}/current/opt/kafka/libs/".format(self.snap),
+                else "/snap/{}/current/opt/kafka/extra/".format(self.snap),
             jmx_file_name=jmx_file_name,
             extra_envvars=extra_envvars)
         # Reload the systemd file

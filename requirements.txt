@@ -1,5 +1,6 @@
 ops
 jinja2
+cryptography==2.8
 pyOpenSSL
 python-hosts==1.0.1
 git+https://github.com/canonical/ops-lib-nrpe#egg=ops-lib-nrpe
