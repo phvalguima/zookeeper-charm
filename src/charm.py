@@ -542,7 +542,6 @@ class ZookeeperCharm(KafkaJavaCharmBase):
         super().install_packages(
             'openjdk-11-headless',
             packages,
-            snap_connect=["mount-observe"],
             masked_services=["snap.kafka.kafka"])
         data_log_fs = \
             list(yaml.safe_load(
